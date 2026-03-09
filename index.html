@@ -211,30 +211,31 @@ async function claude(system, userMsg, maxTokens=2000, jsonMode=false, model="fl
 
 function extractJSON(text) {
   if (!text) throw new Error("Empty response from AI.");
-  let t = text.replace(/```json/gi,"").replace(/```/g,"").trim();
-  // Direct parse first
-  try { return JSON.parse(t); } catch(e) {}
-  // Find outermost { }
-  const start = t.indexOf("{");
-  const end = t.lastIndexOf("}");
-  if (start === -1) throw new Error("No JSON in response. Got: " + t.slice(0,120));
-  if (end === -1 || end <= start) throw new Error("JSON truncated - response was cut off mid-way. Please try again.");
-  t = t.slice(start, end + 1);
+  var t = text.replace(/```json/gi,"").replace(/```/g,"").trim();
   try { return JSON.parse(t); } catch(e0) {}
-  // Sanitize control chars
-  let out = ""; let inStr = false; let i = 0;
+  var start = t.indexOf("{");
+  var end = t.lastIndexOf("}");
+  if (start === -1) throw new Error("No JSON in response. Got: " + t.slice(0,120));
+  if (end <= start) throw new Error("JSON was cut off mid-response. Please try again.");
+  t = t.slice(start, end + 1);
+  try { return JSON.parse(t); } catch(e1) {}
+  var out = ""; var inStr = false; var i = 0;
   while (i < t.length) {
-    const ch = t[i];
-    if (inStr && ch === "\\") { out += ch + (t[i+1]||""); i+=2; continue; }
-    if (ch === '"') { inStr = !inStr; out += ch; i++; continue; }
-    if (inStr && ch.charCodeAt(0) < 32) {
-      out += ch==='
-'?"\\n":ch===''?"\\r":ch==='	'?"\\t":" "; i++; continue;
+    var ch = t[i];
+    var cc = ch.charCodeAt(0);
+    if (inStr && cc === 92) { out += ch; i++; if (i < t.length) { out += t[i]; i++; } continue; }
+    if (cc === 34) { inStr = !inStr; out += ch; i++; continue; }
+    if (inStr && cc < 32) {
+      if (cc === 10) out += "\n";
+      else if (cc === 13) out += "\r";
+      else if (cc === 9) out += "\t";
+      else out += " ";
+      i++; continue;
     }
     out += ch; i++;
   }
-  try { return JSON.parse(out); } catch(e1) {
-    throw new Error("JSON parse failed: " + e1.message + ". Sample: " + t.slice(0,150));
+  try { return JSON.parse(out); } catch(e2) {
+    throw new Error("JSON parse failed: " + e2.message + ". Response sample: " + t.slice(0,150));
   }
 }
 
