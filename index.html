@@ -323,25 +323,21 @@ function PasswordScreen({ onAuth }) {
   );
 }
 
-// ContentCard - standalone component to avoid hooks-in-map (React error #310)
+// ContentCard - fix hooks-in-map (React error #310)
 function ContentCard({item}) {
   const [script, setScript] = React.useState(null);
   const isVideo = item.platform==="TikTok"||item.contentType==="Instagram Reel"||item.contentType==="TikTok Video";
   const pcol = {LinkedIn:"#0077b5",Instagram:"#e1306c",TikTok:"#69c9d0",Blog:"#10b981",Email:"#f59e0b"}[item.platform]||"#3b82f6";
-  async function generateScript() {
+  async function genScript() {
     setScript("loading");
     const key = getSettings().geminiApiKey;
     if (!key) { alert("Add Gemini API key in Settings."); setScript(null); return; }
     try {
-      const resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="+key,{
-        method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({contents:[{role:"user",parts:[{text:"Write a 60s UGC talking-head video script.\nTitle: "+item.title+"\nHook: "+item.hook+"\nBrief: "+item.brief+"\nPlatform: "+item.platform+"\nSound like a real creator, not a brand.\nFormat:\nHOOK (0-3s): ...\nBODY (3-45s): ... [with visual cues like [look at camera]]\nCTA (45-60s): ...\nReturn only the script text."}]}],generationConfig:{maxOutputTokens:1500}})
-      });
-      const d = await resp.json();
+      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="+key,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({contents:[{role:"user",parts:[{text:"Write a 60s UGC talking-head script. Title: "+item.title+". Hook: "+item.hook+". Platform: "+item.platform+". Sound like a real person. Format: HOOK (0-3s):\nBODY (3-45s):\nCTA (45-60s):"}]}],generationConfig:{maxOutputTokens:1200}})});
+      const d = await r.json();
       if (d.error) throw new Error(d.error.message);
-      const txt = d.candidates?.[0]?.content?.parts?.[0]?.text||"";
-      setScript(txt||"error");
-    } catch(e) { alert("Script error: "+e.message); setScript(null); }
+      setScript(d.candidates?.[0]?.content?.parts?.[0]?.text||"error");
+    } catch(e) { alert("Error: "+e.message); setScript(null); }
   }
   return (
     <div style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:12,padding:16,marginBottom:10}}>
@@ -354,27 +350,33 @@ function ContentCard({item}) {
           <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
             <span style={{fontSize:10,fontWeight:700,color:pcol,background:pcol+"15",border:"1px solid "+pcol+"30",padding:"2px 8px",borderRadius:20}}>{item.platform}</span>
             <span style={{fontSize:10,color:"#4b5563",background:"#111827",border:"1px solid #1e293b",padding:"2px 8px",borderRadius:20}}>{item.format||item.contentType}</span>
-            {isVideo&&<span style={{fontSize:10,color:"#a78bfa",background:"rgba(139,92,246,0.1)",border:"1px solid rgba(139,92,246,0.2)",padding:"2px 8px",borderRadius:20}}>🎬 UGC Video</span>}
+            {isVideo&&<span style={{fontSize:10,color:"#a78bfa",background:"rgba(139,92,246,0.1)",border:"1px solid rgba(139,92,246,0.2)",padding:"2px 8px",borderRadius:20}}>🎬 UGC</span>}
           </div>
           <div style={{fontSize:13,fontWeight:600,color:"#f1f5f9",marginBottom:4}}>{item.title}</div>
           <div style={{fontSize:11,color:"#64748b",fontStyle:"italic",marginBottom:6}}>"{item.hook}"</div>
           <div style={{fontSize:11,color:"#374151",lineHeight:1.6}}>{item.brief}</div>
-          {isVideo&&<div style={{marginTop:8}}>
-            {script===null&&<button onClick={generateScript} style={{fontSize:11,color:"#a78bfa",background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit"}}>✨ Generate UGC Script</button>}
-            {script==="loading"&&<span style={{fontSize:11,color:"#a78bfa"}}>✨ Generating...</span>}
-            {script&&script!=="loading"&&<div style={{marginTop:8}}>
-              <div style={{display:"flex",gap:6,marginBottom:8}}>
-                <button onClick={generateScript} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>↻ Regen</button>
-                <button onClick={()=>navigator.clipboard.writeText(script)} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>Copy</button>
-                <a href={"https://higgsfield.ai/flow/builder?prompt="+encodeURIComponent("UGC video. Title: "+item.title+". Script: "+script)} target="_blank" rel="noreferrer" style={{fontSize:10,color:"white",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",borderRadius:5,padding:"3px 10px",textDecoration:"none",fontFamily:"inherit",fontWeight:600}}>🎬 Higgsfield ↗</a>
-              </div>
-              <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.15)",borderRadius:8,padding:12}}>
-                <div style={{fontSize:10,color:"#8b5cf6",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.5px"}}>UGC Script</div>
-                <div style={{fontSize:12,color:"#cbd5e1",lineHeight:1.8,whiteSpace:"pre-wrap",fontFamily:"monospace"}}>{script}</div>
-                {item.audioSuggestion&&<div style={{fontSize:11,color:"#4b5563",marginTop:8}}>🎵 {item.audioSuggestion}</div>}
-              </div>
-            </div>}
-          </div>}
+          {isVideo&&(
+            <div style={{marginTop:8}}>
+              {script===null&&(
+                <button onClick={genScript} style={{fontSize:11,color:"#a78bfa",background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit"}}>✨ Generate UGC Script</button>
+              )}
+              {script==="loading"&&(
+                <span style={{fontSize:11,color:"#a78bfa"}}>✨ Generating...</span>
+              )}
+              {script&&script!=="loading"&&(
+                <div style={{marginTop:8}}>
+                  <div style={{display:"flex",gap:6,marginBottom:8}}>
+                    <button onClick={genScript} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>↻ Regen</button>
+                    <button onClick={()=>navigator.clipboard.writeText(script)} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>Copy</button>
+                  </div>
+                  <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.15)",borderRadius:8,padding:12}}>
+                    <div style={{fontSize:10,color:"#8b5cf6",marginBottom:8}}>UGC SCRIPT</div>
+                    <div style={{fontSize:12,color:"#cbd5e1",lineHeight:1.8,whiteSpace:"pre-wrap",fontFamily:"monospace"}}>{script}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div style={{fontSize:9,color:"#374151",background:"#060810",border:"1px solid #0d1525",padding:"3px 8px",borderRadius:20,whiteSpace:"nowrap"}}>{item.pillar}</div>
       </div>
@@ -382,250 +384,6 @@ function ContentCard({item}) {
   );
 }
 
-// === CMO AGENT ===
-function CMOAgent() {
-  const [focus, setFocus] = useState("");
-  const [category, setCategory] = useState("General");
-  const [weekStart, setWeekStart] = useState("");
-  const [generating, setGenerating] = useState(false);
-  const [plan, setPlan] = useState(null);
-  const [pushing, setPushing] = useState(false);
-  const [pushed, setPushed] = useState(false);
-  const [chatMsgs, setChatMsgs] = useState([{role:"assistant",content:"Hello. I'm your CMO Agent. I have full context on Flashcall's brand and strategy. Ask me anything or generate a weekly plan below."}]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const [tab, setTab] = useState("brief");
-  const [toast, setToast] = useState(null);
-  const [trendData, setTrendData] = useState(null);
-  const chatEnd = useRef(null);
-
-  useEffect(()=>{
-    const d=new Date(); const m=new Date(d); m.setDate(d.getDate()-d.getDay()+1); setWeekStart(m.toISOString().split("T")[0]);
-    // Load cached trend data from Trend Agent
-    try { const t = localStorage.getItem("fc_trends_data"); if(t) setTrendData(JSON.parse(t)); } catch(e){}
-  },[]);
-  useEffect(()=>{ chatEnd.current?.scrollIntoView({behavior:"smooth"}); },[chatMsgs]);
-
-  function showToast(msg,type="success"){ setToast({msg,type}); setTimeout(()=>setToast(null),3000); }
-
-  async function generate() {
-    if(!focus.trim()) return;
-    setGenerating(true); setPlan(null); setPushed(false);
-    // Build trend context from Trend Agent if available
-    const trendContext = trendData ? `
-LIVE TREND INTELLIGENCE (researched ${localStorage.getItem("fc_trends_time")||"recently"} via Google Search):
-- Weekly Summary: ${trendData.summary}
-- Hot Topics Right Now: ${(trendData.hotTopics||[]).join(", ")}
-- Cross-Platform Themes: ${(trendData.crossPlatformThemes||[]).join(", ")}
-- Avoid This Week: ${(trendData.avoidThisWeek||[]).join(", ")}
-- Trend Agent Recommendation: ${trendData.cmoRecommendation}
-${(trendData.platforms||[]).map(p => `- ${p.name}: trending formats="${p.viralFormat}", top trends="${(p.topTrends||[]).join(", ")}", top hashtags="${(p.topHashtags||[]).join(", ")}"`).join("\n")}
-
-YOU MUST incorporate these live trends into the content plan. Every piece should tap into what is actually trending right now.
-` : "No trend data available. Run the Trend Research Agent first for better results.";
-
-    const prompt = `${buildBrand(getSettings())}
-
-TASK: Generate a weekly content plan for the week of ${weekStart}.
-CEO FOCUS THIS WEEK: ${sanitizePrompt(focus)}
-TARGET AUDIENCE THIS WEEK: ${category}
-
-${trendContext}
-
-PLATFORM & FORMAT RULES (STRICT):
-- LinkedIn: text posts only. Professional, story-driven, first-person.
-- Instagram: UGC-style Reels ONLY. No static image posts. Authentic, face-to-camera or POV style.
-- TikTok: UGC-style videos ONLY. Raw, authentic, no polish. Trending audio hooks.
-- Blog: Long-form SEO article.
-- Email: Newsletter edition.
-- NEVER plan image posts for Instagram or TikTok. ONLY video/reel formats.
-
-CONTENT STRATEGY RULES:
-1. Each piece must have a DIFFERENT angle - no repetition of themes.
-2. Mix angles: personal story, hot take, myth-busting, how-to, case study, data insight.
-3. Hooks must be scroll-stopping - curiosity gaps, surprising stats, bold statements.
-4. Use trending angles: "unpopular opinion", "what I wish I knew", "nobody talks about this", "I tested X for Y days".
-5. Only 1 in 5 pieces can mention the product. Others are pure value.
-6. Every piece must feel like a real creator sharing their experience, not a brand.
-7. Be specific - real numbers, real scenarios, real outcomes.
-
-UGC VIDEO BRIEFS (for Instagram Reels and TikTok):
-- Include a "ugcScript" field with a full talking-head script: HOOK(0-3s), BODY(3-45s), CTA(45-60s).
-- Script must sound like natural speech, not corporate copy.
-- Include [visual cues] like [look directly at camera], [hold up phone showing app], [walk and talk].
-- Suggest trending audio style: e.g. "upbeat trending audio", "no music - raw voice only", "lo-fi background".
-
-Return ONLY this JSON structure:
-{"weeklyStrategy":"one sentence narrative arc","keyInsight":"the big idea tying content together","watchMetric":"which metric to track and why","content":[{"title":"content title","platform":"LinkedIn|Instagram|TikTok|Blog|Email","contentType":"LinkedIn Post|Instagram Reel|TikTok Video|Blog Article|Email Newsletter","format":"Text Post|UGC Reel|UGC Video|Long-form Article|Newsletter","day":"Monday|Tuesday|Wednesday|Thursday|Friday","pillar":"Success Stories|Education|Platform Tips|Industry Insights|Social Proof","angle":"personal story|hot take|myth-busting|how-to|case study|data insight","hook":"the first line - must stop the scroll","cta":"subtle CTA (not salesy)","brief":"3-4 sentences on what to write and the story to tell","ugcScript":"HOOK: [0-3s script]\nBODY: [3-45s script with visual cues]\nCTA: [45-60s script] - only for Instagram Reels and TikTok Videos, empty string for others","audioSuggestion":"trending audio style suggestion - only for video content, empty string for others","keywords":"relevant hashtags or SEO terms"}]}
-
-Include: ${getSettings().linkedinPerWeek} LinkedIn Posts, ${getSettings().instagramPerWeek} Instagram Reels, ${getSettings().blogPerWeek} Blog Articles, 1 Email Newsletter, 2 TikTok Videos. Every hook must be genuinely scroll-stopping.`;
-    try {
-      const text = await claude("You are a senior CMO AI. Output ONLY raw valid JSON, no markdown, no backticks.", sanitizePrompt(prompt), 8192, false, "flash");
-      // Show raw response for debugging
-      if (!text || text.trim().length < 10) throw new Error("Empty response. Raw: " + JSON.stringify(text));
-      const parsed = extractJSON(text);
-      setPlan(parsed);
-    } catch(e){ showToast("Error: " + (e.message || e), "error"); }
-    setGenerating(false);
-  }
-
-  async function pushToAirtable() {
-    if(!plan?.content) return;
-    setPushing(true);
-    const records = plan.content.map(item => {
-      const d = new Date(weekStart);
-      const offset = ["Monday","Tuesday","Wednesday","Thursday","Friday"].indexOf(item.day);
-      d.setDate(d.getDate()+(offset>=0?offset:0));
-      return { fields:{
-        "Content Title":item.title, "Content Type":item.contentType, "Status":"Idea",
-        "Publish Date":d.toISOString().split("T")[0], "Content Pillar":item.pillar,
-        "Consultant Category":category, "Hook":item.hook, "CTA":item.cta,
-        "Notes":item.brief, "Keywords / Hashtags":item.keywords||"",
-        "Assigned Agent": item.contentType==="LinkedIn Post"?"LinkedIn Agent":item.contentType.includes("Instagram")?"Instagram Agent":item.contentType==="TikTok Video"?"TikTok Agent":item.contentType==="Blog Article"?"Blog Writer Agent":"Email Agent"
-      }};
-    });
-    for(let i=0;i<records.length;i+=10) await atPost("Content Calendar", records.slice(i,i+10));
-    setPushed(true); setPushing(false);
-    showToast(`${records.length} items pushed to Airtable ✓`);
-  }
-
-  async function sendChat() {
-    if(!chatInput.trim()||chatLoading) return;
-    const msg = chatInput.trim(); setChatInput(""); setChatLoading(true);
-    const history = [...chatMsgs.map(m=>({role:m.role,content:m.content})),{role:"user",content:msg}];
-    setChatMsgs(history);
-    try {
-      const _key = getSettings().geminiApiKey;
-      if (!_key) { setChatMsgs(m=>[...m,{role:"assistant",content:"⚠️ No Gemini API key set. Please add it in Settings -> Integrations."}]); setChatLoading(false); return; }
-      const _sys = `${buildBrand(getSettings())}\n\nYou are the CMO Agent. Give sharp, specific strategic advice. Be concise.`;
-      const _contents = history.map(m=>({ role: m.role==="assistant"?"model":"user", parts:[{text:m.content}] }));
-      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + _key, {
-        method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ system_instruction:{parts:[{text:_sys}]}, contents:_contents, generationConfig:{maxOutputTokens:1000} })
-      });
-      const d = await r.json();
-      if (d.error) throw new Error(d.error.message);
-      setChatMsgs(prev=>[...prev,{role:"assistant",content:d.candidates?.[0]?.content?.parts?.[0]?.text||"No response"}]);
-    } catch(e){ setChatMsgs(prev=>[...prev,{role:"assistant",content:"Error: " + (e.message || e)}]); }
-    setChatLoading(false);
-  }
-
-  const CATS = ["General","Career Coaches","Financial Advisors","Business Consultants","Fitness & Wellness","Life Coaches","Tech Advisors","Lawyers"];
-
-  return (
-    <div style={{height:"100%",display:"flex",flexDirection:"column",fontFamily:"'DM Sans',sans-serif"}}>
-      {toast && <Toast {...toast}/>}
-      <div style={{display:"flex",gap:4,padding:"16px 24px 0",borderBottom:"1px solid #0d1525",background:"#06080f"}}>
-        {[{id:"brief",label:"📋 Weekly Brief"},{id:"chat",label:"💬 Ask CMO"}].map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} className="tab-btn" style={{
-            padding:"8px 16px",borderRadius:"8px 8px 0 0",border:"none",cursor:"pointer",
-            background:tab===t.id?"#0a0e1c":"transparent",
-            color:tab===t.id?"#f1f5f9":"#374151",fontSize:13,fontWeight:500,fontFamily:"inherit"
-          }}>{t.label}</button>
-        ))}
-      </div>
-
-      <div style={{flex:1,overflowY:"auto",padding:24}}>
-        {tab==="brief" && (
-          <div>
-            <h2 style={{fontSize:20,fontWeight:700,color:"#f1f5f9",marginBottom:4,letterSpacing:"-0.3px"}}>Weekly Marketing Brief</h2>
-            <p style={{fontSize:13,color:"#374151",marginBottom:12}}>Tell your CMO what matters this week -> get a full content plan.</p>
-            {trendData ? (
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,padding:"8px 12px",background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:8}}>
-                <span>🔍</span>
-                <span style={{fontSize:12,color:"#a78bfa",flex:1}}>Live trend data active - plan will use real-time trends</span>
-                <span style={{fontSize:11,color:"#10b981",fontWeight:600}}>✓ Live</span>
-              </div>
-            ) : (
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:16,padding:"8px 12px",background:"rgba(245,158,11,0.06)",border:"1px solid rgba(245,158,11,0.15)",borderRadius:8}}>
-                <span>⚠️</span>
-                <span style={{fontSize:12,color:"#fbbf24"}}>No trend data - run Trend Agent first for a smarter plan</span>
-              </div>
-            )}
-
-            <div style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:12,padding:20,marginBottom:16}}>
-              <div style={{marginBottom:16}}>
-                <label style={{fontSize:11,color:"#374151",display:"block",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.6px"}}>Week Starting</label>
-                <input type="date" value={weekStart} onChange={e=>setWeekStart(e.target.value)}
-                  style={{background:"#060810",border:"1px solid #111827",borderRadius:8,padding:"9px 12px",color:"#f1f5f9",fontSize:13,fontFamily:"'DM Mono',monospace"}}/>
-              </div>
-              <div style={{marginBottom:16}}>
-                <label style={{fontSize:11,color:"#374151",display:"block",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.6px"}}>Target Consultant Category</label>
-                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                  {CATS.map(c=>(
-                    <button key={c} onClick={()=>setCategory(c)} style={{
-                      padding:"5px 12px",borderRadius:20,border:"1px solid",fontFamily:"inherit",
-                      borderColor:category===c?"#3b82f6":"#111827",
-                      background:category===c?"rgba(59,130,246,0.12)":"transparent",
-                      color:category===c?"#60a5fa":"#4b5563",fontSize:12,cursor:"pointer"
-                    }}>{c}</button>
-                  ))}
-                </div>
-              </div>
-              <div style={{marginBottom:16}}>
-                <label style={{fontSize:11,color:"#374151",display:"block",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.6px"}}>Your Focus / Priority This Week</label>
-                <textarea value={focus} onChange={e=>setFocus(e.target.value)} rows={3}
-                  placeholder="e.g. 'Push career coaches. We just hit 500 consultants - use as social proof. New instant call feature launched.'"
-                  style={{width:"100%",background:"#060810",border:"1px solid #111827",borderRadius:8,padding:"10px 12px",color:"#f1f5f9",fontSize:13,resize:"vertical",lineHeight:1.6,fontFamily:"'DM Sans',sans-serif"}}/>
-              </div>
-              <button onClick={generate} disabled={generating||!focus.trim()} style={{
-                background:focus.trim()&&!generating?"linear-gradient(135deg,#3b82f6,#06b6d4)":"#111827",
-                border:"none",borderRadius:8,padding:"11px 24px",
-                color:focus.trim()&&!generating?"white":"#374151",
-                fontSize:13,fontWeight:600,cursor:focus.trim()&&!generating?"pointer":"not-allowed",fontFamily:"inherit",
-                display:"flex",alignItems:"center",gap:8
-              }}>{generating?<><Spinner/> Generating...</>:"⚡ Generate Weekly Plan"}</button>
-            </div>
-
-            {plan && !plan.error && (
-              <div>
-                <div style={{background:"linear-gradient(135deg,rgba(59,130,246,0.08),rgba(6,182,212,0.06))",border:"1px solid rgba(59,130,246,0.15)",borderRadius:12,padding:20,marginBottom:16}}>
-                  <div style={{fontSize:11,color:"#3b82f6",textTransform:"uppercase",letterSpacing:"1px",marginBottom:10,fontWeight:600}}>CMO WEEKLY STRATEGY</div>
-                  <p style={{fontSize:14,color:"#cbd5e1",lineHeight:1.7,marginBottom:16}}>{plan.weeklyStrategy}</p>
-                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
-                    <div style={{background:"rgba(0,0,0,0.3)",borderRadius:8,padding:12}}>
-                      <div style={{fontSize:10,color:"#374151",marginBottom:4,textTransform:"uppercase",letterSpacing:"0.5px"}}>Key Insight</div>
-                      <div style={{fontSize:12,color:"#94a3b8",lineHeight:1.5}}>{plan.keyInsight}</div>
-                    </div>
-                    <div style={{background:"rgba(0,0,0,0.3)",borderRadius:8,padding:12}}>
-                      <div style={{fontSize:10,color:"#374151",marginBottom:4,textTransform:"uppercase",letterSpacing:"0.5px"}}>Watch Metric</div>
-                      <div style={{fontSize:12,color:"#10b981",fontWeight:500}}>{plan.watchMetric}</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div style={{marginBottom:16}}>
-                  {plan.content?.map((item,i)=>(
-                    <ContentCard key={i} item={item}/>
-                  ))}
-          </div>
-        )}
-
-        {tab==="chat" && (
-          <div style={{display:"flex",flexDirection:"column",height:"calc(100vh - 200px)"}}>
-            <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",gap:12,paddingBottom:16}}>
-              {chatMsgs.map((m,i)=>(
-                <div key={i} style={{display:"flex",gap:10,flexDirection:m.role==="user"?"row-reverse":"row",alignItems:"flex-start"}}>
-                  <div style={{width:28,height:28,borderRadius:7,flexShrink:0,background:m.role==="user"?"#1e293b":"linear-gradient(135deg,#3b82f6,#06b6d4)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,color:"white"}}>{m.role==="user"?"Y":"C"}</div>
-                  <div style={{maxWidth:"78%",padding:"11px 14px",borderRadius:10,background:m.role==="user"?"#1e293b":"#0a0e1c",border:`1px solid ${m.role==="user"?"#334155":"#0d1525"}`,fontSize:13,color:"#cbd5e1",lineHeight:1.7,whiteSpace:"pre-wrap"}}>{m.content}</div>
-                </div>
-              ))}
-              {chatLoading && <div style={{display:"flex",gap:10}}><div style={{width:28,height:28,borderRadius:7,background:"linear-gradient(135deg,#3b82f6,#06b6d4)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,color:"white"}}>C</div><div style={{padding:"11px 14px",borderRadius:10,background:"#0a0e1c",border:"1px solid #0d1525"}}><span style={{animation:"pulse 1.5s infinite",display:"inline-block",fontSize:18,letterSpacing:4}}>···</span></div></div>}
-              <div ref={chatEnd}/>
-            </div>
-            <div style={{display:"flex",gap:8,paddingTop:12,borderTop:"1px solid #0d1525"}}>
-              <textarea value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendChat();}}} placeholder="Ask your CMO anything... (Enter to send)" rows={2}
-                style={{flex:1,background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:8,padding:"10px 12px",color:"#f1f5f9",fontSize:13,resize:"none",lineHeight:1.5,fontFamily:"'DM Sans',sans-serif"}}/>
-              <button onClick={sendChat} disabled={chatLoading||!chatInput.trim()} style={{background:chatInput.trim()&&!chatLoading?"linear-gradient(135deg,#3b82f6,#06b6d4)":"#111827",border:"none",borderRadius:8,padding:"0 16px",color:chatInput.trim()&&!chatLoading?"white":"#374151",fontSize:18,cursor:"pointer"}}>-></button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// === WRITER AGENT ===
 function WriterAgent() {
   const [records, setRecords] = useState([]);
   const [loading, setLoading] = useState(true);
