@@ -578,13 +578,13 @@ Include: ${getSettings().linkedinPerWeek} LinkedIn Posts, ${getSettings().instag
               <div style={{marginBottom:16}}>
                 <label style={{fontSize:11,color:"#374151",display:"block",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.6px"}}>Target Consultant Category</label>
                 <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
-                  {CATS.map(c=>(
-                    <button key={c} onClick={()=>setCategory(c)} style={{
+                  {CATS.map(cat=>(
+                    <button key={cat} onClick={()=>setCategory(cat)} style={{
                       padding:"5px 12px",borderRadius:20,border:"1px solid",fontFamily:"inherit",
-                      borderColor:category===c?"#3b82f6":"#111827",
-                      background:category===c?"rgba(59,130,246,0.12)":"transparent",
-                      color:category===c?"#60a5fa":"#4b5563",fontSize:12,cursor:"pointer"
-                    }}>{c}</button>
+                      borderColor:category===cat?"#3b82f6":"#111827",
+                      background:category===cat?"rgba(59,130,246,0.12)":"transparent",
+                      color:category===cat?"#60a5fa":"#4b5563",fontSize:12,cursor:"pointer"
+                    }}>{cat}</button>
                   ))}
                 </div>
               </div>
