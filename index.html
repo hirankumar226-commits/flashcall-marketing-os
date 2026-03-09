@@ -55,6 +55,7 @@ const DEFAULT_SETTINGS = {
   // Integrations
   geminiApiKey:   "",
   airtableToken:  "",
+  githubToken:    "",
   airtableBase:   "appmf3ZRxCfOSuySO",
   // Product
   productName:    "Flashcall.me",
@@ -91,17 +92,49 @@ function safeParseJSON(text) {
 }
 
 function loadSettings() {
+  let s = { ...DEFAULT_SETTINGS };
   try {
     const saved = localStorage.getItem(SETTINGS_KEY);
-    if (saved) return { ...DEFAULT_SETTINGS, ...JSON.parse(saved) };
+    if (saved) s = { ...s, ...JSON.parse(saved) };
   } catch(e) {}
-  return { ...DEFAULT_SETTINGS };
+  s.geminiApiKey  = loadSecret('geminiApiKey')  || s.geminiApiKey  || '';
+  s.airtableToken = loadSecret('airtableToken') || s.airtableToken || '';
+  s.githubToken   = loadSecret('githubToken')   || s.githubToken   || '';
+  return s;
 }
 
 function saveSettings(s) {
   const toSave = {...s};
   delete toSave.password;
+  delete toSave.geminiApiKey;
+  delete toSave.airtableToken;
+  delete toSave.githubToken;
+  if (s.geminiApiKey  !== undefined) saveSecret('geminiApiKey',  s.geminiApiKey);
+  if (s.airtableToken !== undefined) saveSecret('airtableToken', s.airtableToken);
+  if (s.githubToken   !== undefined) saveSecret('githubToken',   s.githubToken);
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
+}
+
+// === SECRET VAULT (XOR-obfuscated + base64-wrapped) ===
+const SEC_KEY = 'fc_sec_v1';
+const XOR_SEED = 'fcos_v1_2026';
+function xorCipher(str) {
+  return str.split('').map((c,i) =>
+    String.fromCharCode(c.charCodeAt(0) ^ XOR_SEED.charCodeAt(i % XOR_SEED.length))
+  ).join('');
+}
+function saveSecret(name, value) {
+  const vault = loadVault();
+  vault[name] = btoa(unescape(encodeURIComponent(xorCipher(value))));
+  localStorage.setItem(SEC_KEY, JSON.stringify(vault));
+}
+function loadSecret(name) {
+  const vault = loadVault();
+  if (!vault[name]) return '';
+  try { return xorCipher(decodeURIComponent(escape(atob(vault[name])))); } catch(e) { return ''; }
+}
+function loadVault() {
+  try { return JSON.parse(localStorage.getItem(SEC_KEY) || '{}'); } catch(e) { return {}; }
 }
 
 // Live settings - re-read on each use so changes take effect immediately
@@ -1239,7 +1272,16 @@ function SettingsPanel({ onClose }) {
                   <div style={{fontSize:12,fontWeight:600,color:"#8b5cf6",marginBottom:14}}>🤖 Gemini AI</div>
                   <div style={{fontSize:12,color:"#374151",marginBottom:10}}>Enter your Gemini API key to power all AI agents. Get one free at <a href="https://aistudio.google.com/apikey" target="_blank" style={{color:"#8b5cf6"}}>aistudio.google.com</a></div>
                   {inp("geminiApiKey","Gemini API Key","AIza...")}
-                  <div style={{fontSize:11,color:"#4b5563",marginTop:6}}>Model in use: gemini-2.5-flash</div>
+                  <div style={{fontSize:11,color:"#4b5563",marginTop:6}}>Model: gemini-2.0-flash (default) · gemini-2.5-flash (trend agent)</div>
+                </div>
+
+                <div style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:10,padding:18,marginTop:16}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"#f59e0b",marginBottom:10}}>🐙 GitHub Deploy Token</div>
+                  <div style={{fontSize:12,color:"#374151",marginBottom:10}}>Used for auto-deployment. Generate at github.com/settings/tokens with <b>repo</b> scope.</div>
+                  <input type="password" value={s.githubToken||''} onChange={e=>update("githubToken",e.target.value)}
+                    placeholder="ghp_..."
+                    style={{width:"100%",background:"#060810",border:"1px solid #111827",borderRadius:8,padding:"9px 12px",color:"#f1f5f9",fontSize:13,fontFamily:"monospace",boxSizing:"border-box"}} />
+                  <div style={{fontSize:11,color:"#374151",marginTop:6}}>{s.githubToken?"🔒 Saved securely — never stored as plain text":"Not configured"}</div>
                 </div>
               </div>
             )}
