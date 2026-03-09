@@ -322,6 +322,65 @@ function PasswordScreen({ onAuth }) {
   );
 }
 
+// ContentCard - standalone component to avoid hooks-in-map (React error #310)
+function ContentCard({item}) {
+  const [script, setScript] = React.useState(null);
+  const isVideo = item.platform==="TikTok"||item.contentType==="Instagram Reel"||item.contentType==="TikTok Video";
+  const pcol = {LinkedIn:"#0077b5",Instagram:"#e1306c",TikTok:"#69c9d0",Blog:"#10b981",Email:"#f59e0b"}[item.platform]||"#3b82f6";
+  async function generateScript() {
+    setScript("loading");
+    const key = getSettings().geminiApiKey;
+    if (!key) { alert("Add Gemini API key in Settings."); setScript(null); return; }
+    try {
+      const resp = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="+key,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({contents:[{role:"user",parts:[{text:"Write a 60s UGC talking-head video script.\nTitle: "+item.title+"\nHook: "+item.hook+"\nBrief: "+item.brief+"\nPlatform: "+item.platform+"\nSound like a real creator, not a brand.\nFormat:\nHOOK (0-3s): ...\nBODY (3-45s): ... [with visual cues like [look at camera]]\nCTA (45-60s): ...\nReturn only the script text."}]}],generationConfig:{maxOutputTokens:1500}})
+      });
+      const d = await resp.json();
+      if (d.error) throw new Error(d.error.message);
+      const txt = d.candidates?.[0]?.content?.parts?.[0]?.text||"";
+      setScript(txt||"error");
+    } catch(e) { alert("Script error: "+e.message); setScript(null); }
+  }
+  return (
+    <div style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:12,padding:16,marginBottom:10}}>
+      <div style={{display:"grid",gridTemplateColumns:"44px 1fr auto",gap:12,alignItems:"start"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontSize:20}}>{CH_ICONS[item.contentType]||"📄"}</div>
+          <div style={{fontSize:9,color:"#374151",marginTop:2,fontWeight:600}}>{item.day?.slice(0,3)?.toUpperCase()}</div>
+        </div>
+        <div>
+          <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
+            <span style={{fontSize:10,fontWeight:700,color:pcol,background:pcol+"15",border:"1px solid "+pcol+"30",padding:"2px 8px",borderRadius:20}}>{item.platform}</span>
+            <span style={{fontSize:10,color:"#4b5563",background:"#111827",border:"1px solid #1e293b",padding:"2px 8px",borderRadius:20}}>{item.format||item.contentType}</span>
+            {isVideo&&<span style={{fontSize:10,color:"#a78bfa",background:"rgba(139,92,246,0.1)",border:"1px solid rgba(139,92,246,0.2)",padding:"2px 8px",borderRadius:20}}>🎬 UGC Video</span>}
+          </div>
+          <div style={{fontSize:13,fontWeight:600,color:"#f1f5f9",marginBottom:4}}>{item.title}</div>
+          <div style={{fontSize:11,color:"#64748b",fontStyle:"italic",marginBottom:6}}>"{item.hook}"</div>
+          <div style={{fontSize:11,color:"#374151",lineHeight:1.6}}>{item.brief}</div>
+          {isVideo&&<div style={{marginTop:8}}>
+            {script===null&&<button onClick={generateScript} style={{fontSize:11,color:"#a78bfa",background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit"}}>✨ Generate UGC Script</button>}
+            {script==="loading"&&<span style={{fontSize:11,color:"#a78bfa"}}>✨ Generating...</span>}
+            {script&&script!=="loading"&&<div style={{marginTop:8}}>
+              <div style={{display:"flex",gap:6,marginBottom:8}}>
+                <button onClick={generateScript} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>↻ Regen</button>
+                <button onClick={()=>navigator.clipboard.writeText(script)} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>Copy</button>
+                <a href={"https://higgsfield.ai/flow/builder?prompt="+encodeURIComponent("UGC video. Title: "+item.title+". Script: "+script)} target="_blank" rel="noreferrer" style={{fontSize:10,color:"white",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",borderRadius:5,padding:"3px 10px",textDecoration:"none",fontFamily:"inherit",fontWeight:600}}>🎬 Higgsfield ↗</a>
+              </div>
+              <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.15)",borderRadius:8,padding:12}}>
+                <div style={{fontSize:10,color:"#8b5cf6",marginBottom:8,textTransform:"uppercase",letterSpacing:"0.5px"}}>UGC Script</div>
+                <div style={{fontSize:12,color:"#cbd5e1",lineHeight:1.8,whiteSpace:"pre-wrap",fontFamily:"monospace"}}>{script}</div>
+                {item.audioSuggestion&&<div style={{fontSize:11,color:"#4b5563",marginTop:8}}>🎵 {item.audioSuggestion}</div>}
+              </div>
+            </div>}
+          </div>}
+        </div>
+        <div style={{fontSize:9,color:"#374151",background:"#060810",border:"1px solid #0d1525",padding:"3px 8px",borderRadius:20,whiteSpace:"nowrap"}}>{item.pillar}</div>
+      </div>
+    </div>
+  );
+}
+
 // === CMO AGENT ===
 function CMOAgent() {
   const [focus, setFocus] = useState("");
@@ -535,73 +594,9 @@ Include: ${getSettings().linkedinPerWeek} LinkedIn Posts, ${getSettings().instag
                 </div>
 
                 <div style={{marginBottom:16}}>
-                  {plan.content?.map((item,i)=>{
-                    const isVideo = item.platform==="TikTok"||item.contentType==="Instagram Reel"||item.contentType==="TikTok Video";
-                    const platformColor = {LinkedIn:"#0077b5",Instagram:"#e1306c",TikTok:"#69c9d0",Blog:"#10b981",Email:"#f59e0b"}[item.platform]||"#3b82f6";
-                    const [showScript, setShowScript] = React.useState(false);
-                    return (
-                    <div key={i} style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:12,padding:16,marginBottom:10}}>
-                      <div style={{display:"grid",gridTemplateColumns:"44px 1fr auto",gap:12,alignItems:"start"}}>
-                        <div style={{textAlign:"center"}}>
-                          <div style={{fontSize:20}}>{CH_ICONS[item.contentType]||"📄"}</div>
-                          <div style={{fontSize:9,color:"#374151",marginTop:2,fontWeight:600}}>{item.day?.slice(0,3)?.toUpperCase()}</div>
-                        </div>
-                        <div>
-                          <div style={{display:"flex",gap:6,marginBottom:6,flexWrap:"wrap"}}>
-                            <span style={{fontSize:10,fontWeight:700,color:platformColor,background:`${platformColor}15`,border:`1px solid ${platformColor}30`,padding:"2px 8px",borderRadius:20}}>{item.platform}</span>
-                            <span style={{fontSize:10,color:"#4b5563",background:"#111827",border:"1px solid #1e293b",padding:"2px 8px",borderRadius:20}}>{item.format||item.contentType}</span>
-                            {isVideo && <span style={{fontSize:10,color:"#a78bfa",background:"rgba(139,92,246,0.1)",border:"1px solid rgba(139,92,246,0.2)",padding:"2px 8px",borderRadius:20}}>🎬 UGC Video</span>}
-                          </div>
-                          <div style={{fontSize:13,fontWeight:600,color:"#f1f5f9",marginBottom:4}}>{item.title}</div>
-                          <div style={{fontSize:11,color:"#64748b",fontStyle:"italic",marginBottom:6}}>"{item.hook}"</div>
-                          <div style={{fontSize:11,color:"#374151",lineHeight:1.6,marginBottom:isVideo?8:0}}>{item.brief}</div>
-                          {isVideo && item.ugcScript && (
-                            <div>
-                              <button onClick={()=>setShowScript(s=>!s)} style={{fontSize:11,color:"#a78bfa",background:"rgba(139,92,246,0.08)",border:"1px solid rgba(139,92,246,0.2)",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit",marginBottom:showScript?8:0}}>
-                                {showScript?"▲ Hide Script":"▼ View UGC Script"}
-                              </button>
-                              {showScript && (
-                                <div style={{background:"rgba(139,92,246,0.06)",border:"1px solid rgba(139,92,246,0.15)",borderRadius:8,padding:12}}>
-                                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8}}>
-                                    <div style={{fontSize:10,color:"#8b5cf6",textTransform:"uppercase",letterSpacing:"0.5px"}}>UGC Script</div>
-                                    <div style={{display:"flex",gap:6}}>
-                                      <button onClick={()=>navigator.clipboard.writeText(item.ugcScript)} style={{fontSize:10,color:"#64748b",background:"#060810",border:"1px solid #0d1525",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontFamily:"inherit"}}>Copy Script</button>
-                                      <a
-                                        href={"https://higgsfield.ai/flow/builder?prompt=" + encodeURIComponent("Create a UGC-style talking head video. Title: " + item.title + ". Script: " + item.ugcScript + (item.audioSuggestion ? " Audio style: " + item.audioSuggestion : ""))}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        style={{fontSize:10,color:"white",background:"linear-gradient(135deg,#7c3aed,#4f46e5)",border:"none",borderRadius:5,padding:"3px 10px",cursor:"pointer",fontFamily:"inherit",textDecoration:"none",display:"inline-flex",alignItems:"center",gap:4,fontWeight:600}}
-                                      >🎬 Open in Higgsfield ↗</a>
-                                    </div>
-                                  </div>
-                                  <div style={{fontSize:12,color:"#cbd5e1",lineHeight:1.8,whiteSpace:"pre-wrap",fontFamily:"'DM Mono',monospace"}}>{item.ugcScript}</div>
-                                  {item.audioSuggestion && <div style={{fontSize:11,color:"#4b5563",marginTop:8}}>🎵 Audio: {item.audioSuggestion}</div>}
-                                  <div style={{marginTop:10,padding:"8px 10px",background:"rgba(0,0,0,0.3)",borderRadius:6,fontSize:10,color:"#374151",lineHeight:1.6}}>
-                                    💡 <strong style={{color:"#6b7280"}}>How to use:</strong> Click "Open in Higgsfield" -> choose your avatar or upload your photo -> paste script if not pre-filled -> pick a motion preset (Selfie, Happy, Outfit Check) -> generate your UGC video
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div style={{fontSize:9,color:"#374151",background:"#060810",border:"1px solid #0d1525",padding:"3px 8px",borderRadius:20,whiteSpace:"nowrap"}}>{item.pillar}</div>
-                      </div>
-                    </div>
-                  )})}
-                </div>
-
-                <div style={{background:"#0a0e1c",border:"1px solid #0d1525",borderRadius:10,padding:16,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:600,color:"#f1f5f9",marginBottom:2}}>Push to Airtable</div>
-                    <div style={{fontSize:11,color:"#374151"}}>{plan.content?.length} pieces -> Content Calendar</div>
-                  </div>
-                  {pushed ? <span style={{color:"#10b981",fontSize:13,fontWeight:600}}>✓ Pushed to Airtable</span> :
-                    <button onClick={pushToAirtable} disabled={pushing} style={{background:"#10b981",border:"none",borderRadius:7,padding:"8px 16px",color:"white",fontSize:12,fontWeight:600,cursor:"pointer",fontFamily:"inherit",display:"flex",alignItems:"center",gap:6}}>
-                      {pushing?<><Spinner/> Pushing...</>:"-> Push to Airtable"}
-                    </button>}
-                </div>
-              </div>
-            )}
+                  {plan.content?.map((item,i)=>(
+                    <ContentCard key={i} item={item}/>
+                  ))}
           </div>
         )}
 
