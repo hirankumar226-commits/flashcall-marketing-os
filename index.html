@@ -187,76 +187,54 @@ async function atPatch(table, id, fields) {
   return r.json();
 }
 
-async function claude(system, userMsg, maxTokens=2000, jsonMode=false) {
+async function claude(system, userMsg, maxTokens=2000, jsonMode=false, model="flash") {
   const key = getSettings().geminiApiKey;
-  if (!key) throw new Error("No Gemini API key. Please add it in Settings -> Integrations.");
-  const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + key, {
+  if (!key) throw new Error("No Gemini API key. Add it in Settings -> Integrations.");
+  const modelId = model === "pro" ? "gemini-2.5-flash" : "gemini-2.0-flash";
+  const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/" + modelId + ":generateContent?key=" + key, {
     method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({
       system_instruction: { parts: [{ text: system }] },
       contents: [{ role:"user", parts:[{ text: userMsg }] }],
-      generationConfig: { maxOutputTokens: maxTokens, ...(jsonMode && {responseMimeType:"application/json"}) }
+      generationConfig: { maxOutputTokens: maxTokens }
     })
   });
   const d = await r.json();
-  if (d.error) throw new Error(d.error.message);
-  const raw = d.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  if (d.error) throw new Error("Gemini error: " + d.error.message);
+  const candidate = d.candidates?.[0];
+  if (!candidate) throw new Error("No response from Gemini. Check your API key.");
+  const raw = candidate.content?.parts?.map(p => p.text || "").join("") || "";
+  if (candidate.finishReason === "MAX_TOKENS") throw new Error("Response truncated. Reduce content pieces in Settings and retry.");
+  if (!raw) throw new Error("Empty response (reason: " + candidate.finishReason + ").");
   return raw;
 }
 
 function extractJSON(text) {
-  if (!text) throw new Error("No JSON object found in response.");
-  let t = text.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+  if (!text) throw new Error("Empty response from AI.");
+  let t = text.replace(/```json/gi,"").replace(/```/g,"").trim();
+  // Direct parse first
+  try { return JSON.parse(t); } catch(e) {}
+  // Find outermost { }
   const start = t.indexOf("{");
   const end = t.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("No JSON object found. Got: " + text.slice(0,100));
+  if (start === -1) throw new Error("No JSON in response. Got: " + t.slice(0,120));
+  if (end === -1 || end <= start) throw new Error("JSON truncated - response was cut off mid-way. Please try again.");
   t = t.slice(start, end + 1);
-
-  // Try direct parse first
   try { return JSON.parse(t); } catch(e0) {}
-
-  // Robust fix: scan char by char, fix all control chars inside strings
-  let out = "";
-  let inStr = false;
-  let i = 0;
+  // Sanitize control chars
+  let out = ""; let inStr = false; let i = 0;
   while (i < t.length) {
     const ch = t[i];
-    // Handle escape sequences inside strings
-    if (inStr && ch === "\\") {
-      out += ch;
-      i++;
-      if (i < t.length) { out += t[i]; i++; }
-      continue;
+    if (inStr && ch === "\\") { out += ch + (t[i+1]||""); i+=2; continue; }
+    if (ch === '"') { inStr = !inStr; out += ch; i++; continue; }
+    if (inStr && ch.charCodeAt(0) < 32) {
+      out += ch==='
+'?"\\n":ch===''?"\\r":ch==='	'?"\\t":" "; i++; continue;
     }
-    // Toggle string mode on unescaped quotes
-    if (ch === '"') {
-      inStr = !inStr;
-      out += ch;
-      i++;
-      continue;
-    }
-    if (inStr) {
-      const code = ch.charCodeAt(0);
-      if (code < 0x20) {
-        // Replace raw control chars with their escape sequences
-        if (code === 10) out += "\\n";
-        else if (code === 13) out += "\\r";
-        else if (code === 9)  out += "\\t";
-        else out += " ";
-      } else {
-        out += ch;
-      }
-    } else {
-      out += ch;
-    }
-    i++;
+    out += ch; i++;
   }
-
-  try { return JSON.parse(out); } catch(e1) {}
-  // Last resort: try JSON5 which handles trailing commas, unquoted keys, etc
-  try { return JSON5.parse(t); } catch(e2) {}
-  try { return JSON5.parse(out); } catch(e3) {
-    throw new Error("Parse failed: " + e3.message + " | Sample: " + t.slice(0,200));
+  try { return JSON.parse(out); } catch(e1) {
+    throw new Error("JSON parse failed: " + e1.message + ". Sample: " + t.slice(0,150));
   }
 }
 
@@ -422,7 +400,7 @@ Return ONLY this JSON structure:
 
 Include: ${getSettings().linkedinPerWeek} LinkedIn Posts, ${getSettings().instagramPerWeek} Instagram Reels, ${getSettings().blogPerWeek} Blog Articles, 1 Email Newsletter, 2 TikTok Videos. Every hook must be genuinely scroll-stopping.`;
     try {
-      const text = await claude("You are a senior CMO AI.", sanitizePrompt(prompt), 8192, true);
+      const text = await claude("You are a senior CMO AI. Output ONLY raw valid JSON, no markdown, no backticks.", sanitizePrompt(prompt), 8192, false, "flash");
       // Show raw response for debugging
       if (!text || text.trim().length < 10) throw new Error("Empty response. Raw: " + JSON.stringify(text));
       const parsed = extractJSON(text);
@@ -461,7 +439,7 @@ Include: ${getSettings().linkedinPerWeek} LinkedIn Posts, ${getSettings().instag
       if (!_key) { setChatMsgs(m=>[...m,{role:"assistant",content:"⚠️ No Gemini API key set. Please add it in Settings -> Integrations."}]); setChatLoading(false); return; }
       const _sys = `${buildBrand(getSettings())}\n\nYou are the CMO Agent. Give sharp, specific strategic advice. Be concise.`;
       const _contents = history.map(m=>({ role: m.role==="assistant"?"model":"user", parts:[{text:m.content}] }));
-      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + _key, {
+      const r = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=" + _key, {
         method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({ system_instruction:{parts:[{text:_sys}]}, contents:_contents, generationConfig:{maxOutputTokens:1000} })
       });
