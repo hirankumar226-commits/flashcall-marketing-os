@@ -67,6 +67,8 @@ const K_VIDEOJOBS  = "fcr_videojobs_v3";   // [{id,operationName,conceptId,title
 /* ── DEFAULT SETTINGS ─────────────────────────────────────────────── */
 const DEFAULTS = {
   geminiApiKey:      "",
+  heygenApiKey:      "",   // from app.heygen.com → Settings → API
+  heygenVoiceId:     "2d5b0e6cf36f460aa7fc47e3eee4ba54",  // default: en-US male
   supabaseUrl:       "",   // https://xxxx.supabase.co
   supabaseAnonKey:   "",   // eyJ... public anon key
   // Video generation uses Gemini key via Veo 3.1 — no separate key needed
@@ -329,6 +331,76 @@ async function fetchVeoVideoBlob(fileUri, geminiKey) {
   if (!res.ok) throw new Error(`Video fetch HTTP ${res.status} — file may have expired (48h limit)`);
   const blob = await res.blob();
   return URL.createObjectURL(blob);
+}
+
+/* ── HEYGEN API ─────────────────────────────────────────────────── */
+async function heygenListAvatars(apiKey) {
+  const res = await fetch("https://api.heygen.com/v2/avatars", {
+    headers: { "X-Api-Key": apiKey }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || `HeyGen avatars HTTP ${res.status}`);
+  return data?.data?.avatars || [];
+}
+
+async function heygenListVoices(apiKey) {
+  const res = await fetch("https://api.heygen.com/v2/voices", {
+    headers: { "X-Api-Key": apiKey }
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || `HeyGen voices HTTP ${res.status}`);
+  return data?.data?.voices || [];
+}
+
+async function heygenGenerateVideo(avatarId, script, voiceId, apiKey) {
+  const res = await fetch("https://api.heygen.com/v2/video/generate", {
+    method: "POST",
+    headers: { "X-Api-Key": apiKey, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      video_inputs: [{
+        character: { type: "avatar", avatar_id: avatarId, avatar_style: "normal" },
+        voice:     { type: "text",   input_text: script,   voice_id: voiceId },
+      }],
+      dimension: { width: 1080, height: 1920 },
+      aspect_ratio: null,
+    })
+  });
+  const data = await res.json();
+  console.log("[HeyGen generate]", res.status, JSON.stringify(data));
+  if (!res.ok) throw new Error(data?.message || data?.error?.message || `HeyGen HTTP ${res.status}`);
+  if (!data?.data?.video_id) throw new Error("HeyGen did not return a video_id. Response: " + JSON.stringify(data).slice(0,300));
+  return data.data.video_id;
+}
+
+async function heygenGetVideoStatus(videoId, apiKey) {
+  const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${videoId}`, {
+    headers: { "X-Api-Key": apiKey }
+  });
+  const data = await res.json();
+  console.log("[HeyGen status]", videoId, res.status, data?.data?.status);
+  if (!res.ok) throw new Error(data?.message || `HeyGen status HTTP ${res.status}`);
+  // data.data: { status, video_url, error, duration, ... }
+  return data?.data || {};
+}
+
+async function generateUGCScript(concept, charDesc, settings) {
+  // Use Gemini to turn a concept into a spoken UGC script for HeyGen
+  const sys = `You are a UGC ad scriptwriter. Write a natural, conversational speaking script for a social media video ad. 
+The script must sound like a real person talking directly to camera — no emojis, no hashtags, no stage directions, no scene descriptions.
+Output ONLY the spoken words, nothing else. 60-90 seconds when spoken at a natural pace (~130 words per minute). So aim for 130-195 words.
+Product: ${settings.productName} — ${settings.productTagline}
+${settings.productDesc}
+Brand voice: ${settings.brandVoice}
+Words to use: ${settings.wordsToUse}
+Words to avoid: ${settings.wordsToAvoid}`;
+  const usr = `Write the spoken script for this video concept:
+Title: ${concept.title}
+Hook: ${concept.hook}
+${concept.script ? "Concept script: " + concept.script : ""}
+${charDesc ? "Creator persona: " + charDesc : ""}
+Target audience: ${settings.targetAudience}
+The script should start with the hook, then naturally explain the product, then end with a clear CTA to visit ${settings.websiteUrl}.`;
+  return callGemini(sys, usr, 1024);
 }
 
 /* ── GEMINI API ───────────────────────────────────────────────────── */
@@ -658,25 +730,34 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
   }
 
   async function handleGenerateVideo() {
-    const s   = loadSettings();
-    const key = s.geminiApiKey?.trim();
-    if (!key) { setVideoErr("Add your Gemini API key in ⚙️ Settings → AI first."); return; }
+    const s          = loadSettings();
+    const heygenKey  = s.heygenApiKey?.trim();
+    const geminiKey  = s.geminiApiKey?.trim();
+
+    if (!heygenKey) { setVideoErr("Add your HeyGen API key in ⚙️ Settings → AI first."); return; }
+    if (!geminiKey) { setVideoErr("Add your Gemini API key in ⚙️ Settings → AI (needed for script generation)."); return; }
     const char = selectedChar;
-    if (!char)        { setVideoErr("Select a character first."); return; }
-    if (!char.base64) { setVideoErr("This character has no photo. Edit it and upload an image."); return; }
+    if (!char) { setVideoErr("Select a character first."); return; }
+    if (!char.heygenAvatarId) { setVideoErr("This character has no HeyGen Avatar ID. Edit it and enter the avatar ID from your HeyGen account."); return; }
 
     setGenVideo(true);
     setVideoErr("");
-    setVideoMsg("Submitting to Veo 3.1…");
+    setVideoMsg("✍️ Generating UGC script with AI…");
 
     try {
-      const mimeType = char.base64.match(/^data:([^;]+);/)?.[1] || "image/jpeg";
-      const prompt   = buildVeoPrompt(char);
-      const result   = await callVeoImageToVideo(char.base64, mimeType, prompt, key);
+      // 1. Generate spoken script via Gemini
+      const script = await generateUGCScript(concept, char.desc, s);
+      setVideoMsg("🎬 Submitting to HeyGen…");
+
+      // 2. Submit to HeyGen
+      const voiceId  = s.heygenVoiceId?.trim() || "2d5b0e6cf36f460aa7fc47e3eee4ba54";
+      const videoId  = await heygenGenerateVideo(char.heygenAvatarId, script, voiceId, heygenKey);
 
       const job = {
         id:            uid(),
-        operationName: result.name,
+        provider:      "heygen",
+        heygenVideoId: videoId,
+        operationName: "",        // kept for Veo backward compat
         conceptId:     concept.id,
         title:         concept.title,
         characterId:   char.id,
@@ -684,13 +765,13 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
         status:        "processing",
         videoUrl:      "",
         videoFileUri:  "",
-        prompt,
+        script,
         createdAt:     new Date().toISOString(),
         error:         "",
       };
       appendVideoJob(job);
       setVideoJob(job);
-      setVideoMsg("✓ Job submitted to Veo 3.1! Generating in background — check Videos page (~2–5 min).");
+      setVideoMsg("✓ Submitted to HeyGen! Generating in background (~2–4 min). Check Videos page.");
     } catch (err) {
       setVideoErr(err?.message || "Video generation failed.");
     } finally {
@@ -2985,30 +3066,63 @@ function SettingsPage() {
               )}
             </div>
 
-            {/* ── Veo 3.1 Video Generation info ── */}
+            {/* ── HeyGen Video Generation ── */}
             <div style={{ height: 1, background: "#0e1830", marginBottom: 22 }}/>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#f59e0b", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-              🍌 Veo 3.1 — UGC Video Generation
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#6366f1", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+              🎬 HeyGen — UGC Video Generation
             </div>
-            <div style={{
-              background: "rgba(16,185,129,0.05)", border: "1px solid rgba(16,185,129,0.2)",
-              borderRadius: 10, padding: "16px 18px", fontSize: 12, color: "#374151", lineHeight: 1.8,
-            }}>
-              <div style={{ color: "#10b981", fontWeight: 700, marginBottom: 8 }}>✓ No separate API key needed</div>
-              Video generation runs on <strong style={{ color: "#f1f5f9" }}>Google's Veo 3.1</strong> directly — the same Gemini API key above handles everything. Just upload a character photo and hit Generate.
-              <div style={{ marginTop: 12, padding: "10px 12px", background: "rgba(0,0,0,0.3)", borderRadius: 8 }}>
-                <div style={{ color: "#94a3b8", fontSize: 11, fontWeight: 700, marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.5px" }}>Specs</div>
-                <div>Model: <strong style={{ color: "#f1f5f9" }}>veo-3.1-generate-preview</strong></div>
-                <div>Output: <strong style={{ color: "#f1f5f9" }}>9:16 portrait · 1080p · 8 seconds</strong></div>
-                <div>Render time: <strong style={{ color: "#f1f5f9" }}>~2–5 minutes</strong> per video</div>
-                <div>Cost: <strong style={{ color: "#f1f5f9" }}>~$0.30–0.50 per video</strong> (billed to your Gemini account)</div>
-              </div>
-              <div style={{ marginTop: 10, fontSize: 11, color: "#374151" }}>
-                ⚠️ Note: Veo generates videos as temporary Gemini Files (expire after 48h). Download videos from the Videos page before they expire.
-              </div>
-              <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, fontSize: 11, color: "#f59e0b" }}>
-                ⚡ <strong>Paid API key required</strong> — Veo 3.1 does not work on the free Gemini tier. Enable billing at aistudio.google.com → API key settings. Free keys submit jobs that silently never complete.
-              </div>
+            <p style={{ fontSize: 12, color: "#374151", marginBottom: 14, lineHeight: 1.7 }}>
+              Realistic lip-sync avatar videos — the same tech as Arcads. Gemini writes the UGC script, HeyGen renders the video using your avatar.
+            </p>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              HeyGen API Key
+            </label>
+            <div style={{ position: "relative", marginBottom: 8 }}>
+              <input
+                type="password"
+                value={s.heygenApiKey || ""}
+                onChange={e => update("heygenApiKey", e.target.value)}
+                placeholder="Get from app.heygen.com → Settings → API"
+                style={{
+                  width: "100%", background: "#060912",
+                  border: "1px solid #111827", borderRadius: 8,
+                  padding: "9px 12px",
+                  color: "#f1f5f9", fontSize: 13,
+                  fontFamily: "'DM Mono', monospace", boxSizing: "border-box",
+                }}
+              />
+            </div>
+            <div style={{ fontSize: 11, color: "#374151", marginBottom: 16 }}>
+              Get it at <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Settings → API → Generate API Key
+            </div>
+
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Default Voice ID
+            </label>
+            <input
+              type="text"
+              value={s.heygenVoiceId || ""}
+              onChange={e => update("heygenVoiceId", e.target.value)}
+              placeholder="2d5b0e6cf36f460aa7fc47e3eee4ba54"
+              style={{
+                width: "100%", background: "#060912",
+                border: "1px solid #111827", borderRadius: 8,
+                padding: "9px 12px",
+                color: "#f1f5f9", fontSize: 13,
+                fontFamily: "'DM Mono', monospace", boxSizing: "border-box", marginBottom: 8,
+              }}
+            />
+            <div style={{ fontSize: 11, color: "#374151", marginBottom: 20 }}>
+              Browse voices at <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Voices → click a voice → copy its ID. Default is a US English male voice.
+            </div>
+
+            <div style={{ padding: "12px 14px", background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 10, fontSize: 12, color: "#374151", lineHeight: 1.8 }}>
+              <div style={{ fontWeight: 700, color: "#6366f1", marginBottom: 6 }}>✓ How it works</div>
+              <div>1. Add your <strong style={{ color: "#f1f5f9" }}>HeyGen avatars</strong> in Characters page (paste the Avatar ID)</div>
+              <div>2. Generate a concept → click <strong style={{ color: "#f1f5f9" }}>Generate Video</strong></div>
+              <div>3. Gemini writes a <strong style={{ color: "#f1f5f9" }}>60–90 second UGC script</strong> automatically</div>
+              <div>4. HeyGen renders a <strong style={{ color: "#f1f5f9" }}>realistic talking avatar video</strong> in ~2–4 min</div>
+              <div style={{ marginTop: 8, color: "#64748b" }}>Video links expire in 7 days — download to keep permanently.</div>
             </div>
           </div>
         )}
@@ -3803,6 +3917,7 @@ function CharactersPage() {
   const [fDesc, setFDesc]         = useState("");
   const [fBase64, setFBase64]     = useState("");
   const [fIsDefault, setFIsDefault] = useState(false);
+  const [fHeygenId, setFHeygenId]   = useState("");
   const fileInputRef = useRef(null);
 
   function showToast(msg, type = "success") {
@@ -3812,7 +3927,7 @@ function CharactersPage() {
 
   function openAdd() {
     setEditing(null);
-    setFName(""); setFDesc(""); setFBase64("");
+    setFName(""); setFDesc(""); setFBase64(""); setFHeygenId("");
     setFIsDefault(chars.length === 0);
     setShowForm(true);
   }
@@ -3821,6 +3936,7 @@ function CharactersPage() {
     setEditing(c);
     setFName(c.name); setFDesc(c.desc || "");
     setFBase64(c.base64 || "");
+    setFHeygenId(c.heygenAvatarId || "");
     setFIsDefault(!!c.isDefault);
     setShowForm(true);
   }
@@ -3843,12 +3959,13 @@ function CharactersPage() {
     setUploading(true);
 
     const newChar = {
-      id:        editing?.id || uid(),
-      name:      fName.trim(),
-      desc:      fDesc.trim(),
-      base64:    fBase64,
-      isDefault: fIsDefault,
-      createdAt: editing?.createdAt || new Date().toISOString(),
+      id:              editing?.id || uid(),
+      name:            fName.trim(),
+      desc:            fDesc.trim(),
+      base64:          fBase64,
+      heygenAvatarId:  fHeygenId.trim(),
+      isDefault:       fIsDefault,
+      createdAt:       editing?.createdAt || new Date().toISOString(),
     };
 
     let updated = editing
@@ -3968,6 +4085,25 @@ function CharactersPage() {
           </div>
 
           {/* Default toggle */}
+          {/* HeyGen Avatar ID */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              HeyGen Avatar ID <span style={{ color: "#6366f1", fontWeight: 400, textTransform: "none" }}>required for video generation</span>
+            </label>
+            <input
+              type="text" value={fHeygenId} onChange={e => setFHeygenId(e.target.value)}
+              placeholder="e.g. Abigail_expressive_20240228"
+              style={{ width: "100%", background: "#080d1e", border: "1px solid #0e1830", borderRadius: 8,
+                padding: "10px 12px", color: "#f1f5f9", fontSize: 13, boxSizing: "border-box" }}
+            />
+            <div style={{ fontSize: 11, color: "#374151", marginTop: 5 }}>
+              Get this from <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Avatars → click any avatar → copy its ID from the URL or details panel.
+            </div>
+            {fHeygenId && (
+              <div style={{ fontSize: 11, color: "#10b981", marginTop: 4 }}>✓ Avatar ID set — videos will use HeyGen lip-sync</div>
+            )}
+          </div>
+
           <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
             <input
               type="checkbox" id="isDefaultChk"
@@ -4040,7 +4176,16 @@ function CharactersPage() {
               {/* Info */}
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>{c.name}</div>
-                {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 10, lineHeight: 1.55 }}>{c.desc}</div>}
+                {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 6, lineHeight: 1.55 }}>{c.desc}</div>}
+                {c.heygenAvatarId ? (
+                  <div style={{ fontSize: 10, color: "#10b981", marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                    ✓ HeyGen: <span style={{ fontFamily: "monospace", color: "#6366f1" }}>{c.heygenAvatarId.slice(0,24)}…</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 8 }}>
+                    ⚠ No HeyGen Avatar ID — edit to add one
+                  </div>
+                )}
 
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                   <button onClick={() => openEdit(c)} style={{ background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 12px", color: "#94a3b8", fontSize: 11, cursor: "pointer" }}>
@@ -4144,9 +4289,9 @@ function VideoJobsPage() {
   }, []);
 
   async function pollJobs() {
-    const s   = loadSettings();
-    const key = s.geminiApiKey?.trim();
-    if (!key) return;
+    const s         = loadSettings();
+    const geminiKey = s.geminiApiKey?.trim();
+    const heygenKey = s.heygenApiKey?.trim();
 
     const currentJobs = loadVideoJobs();
     const pending = currentJobs.filter(j => j.status === "queued" || j.status === "processing");
@@ -4154,45 +4299,60 @@ function VideoJobsPage() {
 
     setPolling(true);
     let updated = [...currentJobs];
+    const TIMEOUT_MS = 30 * 60 * 1000;
+
     for (const job of pending) {
-      if (!job.operationName) continue;
-      try {
-        const op = await checkVeoOperation(job.operationName, key);
-        if (op.done) {
-          // Correct Gemini API response path (as of 2025):
-          // .response.generateVideoResponse.generatedSamples[0].video.uri
-          const sample = op.response?.generateVideoResponse?.generatedSamples?.[0];
-          const vid = sample?.video;
-          console.log("[Veo done] full response:", JSON.stringify(op.response, null, 2));
-          if (vid?.uri) {
+      const elapsed = Date.now() - new Date(job.createdAt).getTime();
+      if (elapsed > TIMEOUT_MS) {
+        updated = updated.map(j => j.id === job.id
+          ? { ...j, status: "failed", error: "Timed out after 30 min — try generating again." }
+          : j
+        );
+        continue;
+      }
+      if (job.provider === "heygen") {
+        if (!heygenKey || !job.heygenVideoId) continue;
+        try {
+          const st = await heygenGetVideoStatus(job.heygenVideoId, heygenKey);
+          if (st.status === "completed" && st.video_url) {
             updated = updated.map(j => j.id === job.id
-              ? { ...j, status: "completed", videoFileUri: vid.uri }
+              ? { ...j, status: "completed", videoUrl: st.video_url }
               : j
             );
-          } else if (op.error) {
+          } else if (st.status === "failed") {
             updated = updated.map(j => j.id === job.id
-              ? { ...j, status: "failed", error: op.error?.message || "Generation failed." }
-              : j
-            );
-          } else {
-            // done=true but no video URI and no error — log and fail gracefully
-            const raw = JSON.stringify(op.response || {}).slice(0, 400);
-            updated = updated.map(j => j.id === job.id
-              ? { ...j, status: "failed", error: `No video in response. Raw: ${raw}` }
+              ? { ...j, status: "failed", error: st.error || "HeyGen generation failed." }
               : j
             );
           }
-        }
-        // else still processing — leave status as-is
-      } catch (e) {
-        console.warn("Veo poll error:", e.message);
-        // Don't mark failed on network errors — keep retrying
+        } catch (e) { console.warn("HeyGen poll error:", e.message); }
+      } else {
+        // Legacy Veo jobs
+        if (!geminiKey || !job.operationName) continue;
+        try {
+          const op = await checkVeoOperation(job.operationName, geminiKey);
+          if (op.done) {
+            const sample = op.response?.generateVideoResponse?.generatedSamples?.[0];
+            const vid = sample?.video;
+            if (vid?.uri) {
+              updated = updated.map(j => j.id === job.id
+                ? { ...j, status: "completed", videoFileUri: vid.uri }
+                : j
+              );
+            } else {
+              const raw = JSON.stringify(op.response || {}).slice(0, 300);
+              updated = updated.map(j => j.id === job.id
+                ? { ...j, status: "failed", error: "No video URI in Veo response. " + raw }
+                : j
+              );
+            }
+          }
+        } catch (e) { console.warn("Veo poll error:", e.message); }
       }
     }
     saveVideoJobs(updated);
     setJobs(updated);
     setPolling(false);
-
     const stillPending = updated.filter(j => j.status === "queued" || j.status === "processing");
     if (stillPending.length > 0) {
       pollRef.current = setTimeout(pollJobs, 10000);
@@ -4228,7 +4388,7 @@ function VideoJobsPage() {
             Video Jobs
           </h1>
           <p style={{ fontSize: 13, color: "#374151" }}>
-            Veo 3.1 UGC video generation jobs · {jobs.length} total
+            HeyGen UGC video generation jobs · {jobs.length} total
             {pending.length > 0 && <span style={{ marginLeft: 8, color: "#f59e0b" }}>⚡ {pending.length} rendering</span>}
           </p>
         </div>
@@ -4258,7 +4418,7 @@ function VideoJobsPage() {
         background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.18)",
         borderRadius: 10, padding: "12px 16px", marginBottom: 22, fontSize: 12, color: "#6366f1", lineHeight: 1.7,
       }}>
-        🌐 <strong>Background generation:</strong> Videos render on Google's Veo servers — they continue generating even when you close this tab.
+        🌐 <strong>Background generation:</strong> Videos render on HeyGen's servers — they continue generating even when you close this tab.
         Come back here and click "Refresh Status" to pick up completed videos.
       </div>
 
@@ -4330,45 +4490,60 @@ function VideoJobsPage() {
                       }}
                     />
                   )}
-                  {job.status === "completed" && job.videoFileUri && (
-                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                      <button
-                        onClick={async () => {
-                          try {
-                            const key = loadSettings().geminiApiKey?.trim();
-                            const blobUrl = await fetchVeoVideoBlob(job.videoFileUri, key);
-                            window.open(blobUrl, "_blank");
-                          } catch (e) { alert("Could not load video: " + e.message); }
-                        }}
-                        style={{
-                          background: "linear-gradient(135deg,#10b981,#059669)",
-                          border: "none", borderRadius: 7, padding: "6px 14px",
-                          color: "white", fontSize: 12, fontWeight: 700,
-                          cursor: "pointer",
-                          display: "inline-flex", alignItems: "center", gap: 5,
-                          boxShadow: "0 3px 10px rgba(16,185,129,.3)",
-                        }}>
-                        ▶ Watch Video
-                      </button>
-                      <button
-                        onClick={async () => {
-                          try {
-                            const key = loadSettings().geminiApiKey?.trim();
-                            const blobUrl = await fetchVeoVideoBlob(job.videoFileUri, key);
-                            const a = document.createElement("a");
-                            a.href = blobUrl;
-                            a.download = `${job.title || "ugc-video"}.mp4`;
-                            a.click();
-                          } catch (e) { alert("Download failed: " + e.message); }
-                        }}
-                        style={{
-                          background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 14px",
-                          color: "#94a3b8", fontSize: 12, fontWeight: 600,
-                          cursor: "pointer",
-                          display: "inline-flex", alignItems: "center", gap: 5,
-                        }}>
-                        ⬇ Download
-                      </button>
+                  {job.status === "completed" && (job.videoUrl || job.videoFileUri) && (
+                    <div style={{ marginTop: 6 }}>
+                      {job.provider === "heygen" && (
+                        <div style={{ fontSize: 10, color: "#64748b", marginBottom: 6 }}>
+                          ⏱ HeyGen links expire in 7 days — download to keep
+                        </div>
+                      )}
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          onClick={async () => {
+                            try {
+                              if (job.videoUrl) {
+                                window.open(job.videoUrl, "_blank");
+                              } else {
+                                const key = loadSettings().geminiApiKey?.trim();
+                                const blobUrl = await fetchVeoVideoBlob(job.videoFileUri, key);
+                                window.open(blobUrl, "_blank");
+                              }
+                            } catch (e) { alert("Could not load video: " + e.message); }
+                          }}
+                          style={{
+                            background: "linear-gradient(135deg,#10b981,#059669)",
+                            border: "none", borderRadius: 7, padding: "6px 14px",
+                            color: "white", fontSize: 12, fontWeight: 700,
+                            cursor: "pointer",
+                            display: "inline-flex", alignItems: "center", gap: 5,
+                            boxShadow: "0 3px 10px rgba(16,185,129,.3)",
+                          }}>
+                          ▶ Watch Video
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              let url = job.videoUrl;
+                              if (!url) {
+                                const key = loadSettings().geminiApiKey?.trim();
+                                url = await fetchVeoVideoBlob(job.videoFileUri, key);
+                              }
+                              const a = document.createElement("a");
+                              a.href = url;
+                              a.download = (job.title || "ugc-video") + ".mp4";
+                              a.target = "_blank";
+                              a.click();
+                            } catch (e) { alert("Download failed: " + e.message); }
+                          }}
+                          style={{
+                            background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 14px",
+                            color: "#94a3b8", fontSize: 12, fontWeight: 600,
+                            cursor: "pointer",
+                            display: "inline-flex", alignItems: "center", gap: 5,
+                          }}>
+                          ⬇ Download
+                        </button>
+                      </div>
                     </div>
                   )}
                   {job.status === "failed" && (
