@@ -2043,6 +2043,8 @@ ${ANALYSIS_PROMPT}`;
 function GeneratorPage() {
   const [genMode, setGenMode]       = useState("generate"); // "generate" | "analyze"
   const [focus, setFocus]           = useState("");
+  const [creatorVoice, setCreatorVoice] = useState("");
+  const [viralCtx, setViralCtx]         = useState(null);
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress]     = useState("");
   const [concepts, setConcepts]     = useState([]);
@@ -2114,7 +2116,7 @@ function GeneratorPage() {
 
       setProgress(`Generating ${conceptCount} unique concepts...`);
 
-      const systemPrompt = buildBrandContext();
+      const systemPrompt = buildBrandContext() + (creatorVoice.trim() ? "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCREATOR VOICE REFERENCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nThe scripts you generate MUST match the exact tone, language style, sentence rhythm, and energy of this reference script. If it uses Hinglish, use Hinglish. If it's conversational, keep it conversational. Mirror the creator's natural voice closely — do not make it sound generic or AI-written.\n\nREFERENCE SCRIPT:\n" + creatorVoice.trim().slice(0, 2000) : "");
 
       // Theme context
       const theme      = themes.find(t => t.id === selectedTheme);
@@ -2655,6 +2657,47 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
                 lineHeight: 1.65, marginBottom: 18,
               }}
             />
+
+            {/* ── CREATOR VOICE / REFERENCE SCRIPT ── */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+              <label style={{
+                fontSize: 11, fontWeight: 600, color: "#374151",
+                textTransform: "uppercase", letterSpacing: "0.7px",
+              }}>
+                Creator Voice <span style={{ color: "#1e2d4a", fontWeight: 400 }}>(optional — paste a script to match tone &amp; style)</span>
+              </label>
+              <button
+                onClick={() => setCreatorVoice(`Instagram creators, YouTube influencers… ek honest question- kya sirf ads aur brand deals se income stable hai?\nFacebook monetization is not enough, right?\nAb imagine karo… my followers can call me.\nYes — real 1:1 conversations. And I earn per call.\nFlashcall ke through, I just share my creator profile link in bio.\nOne link for calls & chat. Bas link share karo — aur followers instantly connect kar sakte hain via audio calls, video calls, ya paid chat.\nNo phone number required. Full privacy and safety.\nMain apna time set karti hoon. Apna price set karti hoon.\nNo disturbance. No midnight calling.\nThis is not free DMs. Only genuine fans.\nConvert audience to paid 1:1 calls.\nBuild real fan connections. Earn from your time.\nInstant audio calls with followers.\nInstant video calls with fans.\nPriority direct messages.\nInstant withdrawal — no long waiting for payouts.\nDon't depend on one platform for income.\nOwn your audience. Monetize your audience now.\nStart connecting today — share your Flashcall link.`)}
+                style={{ fontSize: 11, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 6, color: "#818cf8", padding: "3px 10px", cursor: "pointer", fontWeight: 600 }}>
+                ✦ Load Amisha's Voice
+              </button>
+            </div>
+            <div style={{ position: "relative" }}>
+              <textarea
+                value={creatorVoice}
+                onChange={e => setCreatorVoice(e.target.value)}
+                rows={4}
+                placeholder={"e.g. paste Amisha's script here and AI will write in her Hinglish style, tone, and energy..."}
+                style={{
+                  width: "100%", background: "#060912",
+                  border: "1px solid " + (creatorVoice ? "#6366f1" : "#111827"), borderRadius: 9,
+                  padding: "11px 14px", color: "#f1f5f9",
+                  fontSize: 13, resize: "vertical",
+                  lineHeight: 1.65, marginBottom: 4, boxSizing: "border-box",
+                }}
+              />
+              {creatorVoice && (
+                <button onClick={() => setCreatorVoice("")}
+                  style={{ position: "absolute", top: 8, right: 8, background: "#1a2540", border: "none", borderRadius: 6, color: "#6b7280", fontSize: 11, padding: "3px 8px", cursor: "pointer" }}>
+                  ✕ clear
+                </button>
+              )}
+            </div>
+            {creatorVoice && (
+              <div style={{ fontSize: 11, color: "#6366f1", marginBottom: 14 }}>
+                ✦ AI will match this creator's voice, language mix, and tone
+              </div>
+            )}
 
             {/* ── GENERATE BUTTON ── */}
             <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -4998,6 +5041,7 @@ function AdStudioPage() {
   const [loadingMsg, setLoadingMsg]   = useState("");
   const [loadingTick, setLoadingTick] = useState(0);
   const [copied, setCopied]           = useState("");
+  const [scriptStyle, setScriptStyle] = useState("default"); // "default" | "anisha"
   const [provider, setProvider]       = useState("gemini"); // "gemini" | "openai"
   const tickerRef = useRef(null);
 
@@ -5169,7 +5213,7 @@ function AdStudioPage() {
       setGeneratedImage(imgSrc || null);
       if (!imgSrc) setError("Image failed (" + imgErr + ") — script is still ready below.");
       setLoadingMsg("Writing the Flashcall script...");
-      const sp = "You are a top UGC scriptwriter for Flashcall — a platform that lets creators monetize their followers through personal 1:1 paid calls. This ad targets CREATORS, not fans. The person in the video is speaking to other creators who have followers and want to earn from them. Reference DNA — Activity: " + (analysis.activity||"") + ". Scene: " + (analysis.scene||"") + ". Energy: " + (analysis.energy||"") + ". Hook style: " + (analysis.hook_style||"") + ". Pacing: " + (analysis.pacing||"") + ". Write a 60-second UGC ad script where the creator shares how Flashcall helped them monetize their followers through 1:1 calls. Hook must grab a creator who has followers but is not monetizing them yet. Feel real, unscripted, peer-to-peer — like one creator talking to another. Never say audience — always say followers. Return ONLY valid JSON with keys: hook, full_script, text_overlays (array of 4), caption, cta.";
+      const sp = "You are a top UGC scriptwriter for Flashcall — a platform that lets creators monetize their followers through personal 1:1 paid calls. This ad targets CREATORS, not fans. The person in the video is speaking to other creators who have followers and want to earn from them. Reference DNA — Activity: " + (analysis.activity||"") + ". Scene: " + (analysis.scene||"") + ". Energy: " + (analysis.energy||"") + ". Hook style: " + (analysis.hook_style||"") + ". Pacing: " + (analysis.pacing||"") + ". " + (scriptStyle === "anisha" ? "STYLE REFERENCE — Anisha Version (Hinglish creator tone, real & peer-to-peer): Adapt this exact style — short punchy questions to grab attention, mix of Hindi/English (Hinglish), conversational and honest tone, builds curiosity then reveals the solution, lists specific features in short lines, ends with a strong ownership CTA. Reference script:\n" + ANISHA_SCRIPT + "\nNow write a NEW original script in this Anisha style — same tone, same Hinglish energy, same structure. Do NOT copy lines. Make it fresh but stylistically identical." : "Write a 60-second UGC ad script where the creator shares how Flashcall helped them monetize their followers through 1:1 calls. Hook must grab a creator who has followers but is not monetizing them yet. Feel real, unscripted, peer-to-peer — like one creator talking to another.") + " Never say audience — always say followers. Return ONLY valid JSON with keys: hook, full_script, text_overlays (array of 4), caption, cta.";
       const sr = await aiCall(sp, []);
       const ps = JSON.parse(sr.text.replace(/```json|```/g, "").trim());
       setScript(ps);
@@ -5287,6 +5331,22 @@ function AdStudioPage() {
           <h3 style={{ fontFamily:"'Bricolage Grotesque',sans-serif", fontSize:18, fontWeight:800, color:"#f1f5f9", margin:"0 0 14px" }}>Describe your creator</h3>
           <textarea placeholder="e.g. South Indian woman, mid-20s, natural makeup, dark wavy hair, warm smile, casual home outfit" value={creatorDesc} onChange={e => setCreatorDesc(e.target.value)} rows={3} style={{ ...S.input, resize:"none", lineHeight:1.7, marginBottom:14 }}/>
           {error && <div style={{ background:"rgba(239,68,68,0.07)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"10px 14px", color:"#f87171", fontSize:13, marginBottom:14 }}>{error}</div>}
+          {/* ── Script Style Selector ── */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em", marginBottom:8 }}>SCRIPT STYLE</div>
+            <div style={{ display:"flex", gap:8 }}>
+              <button onClick={() => setScriptStyle("default")}
+                style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid "+(scriptStyle==="default"?"#6366f1":"#1a2540"), background:scriptStyle==="default"?"rgba(99,102,241,0.12)":"transparent", color:scriptStyle==="default"?"#818cf8":"#4b5563", fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"left" }}>
+                <div style={{ fontWeight:700 }}>✦ Default</div>
+                <div style={{ fontSize:11, marginTop:2, opacity:0.7 }}>Standard UGC creator ad</div>
+              </button>
+              <button onClick={() => setScriptStyle("anisha")}
+                style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid "+(scriptStyle==="anisha"?"#f59e0b":"#1a2540"), background:scriptStyle==="anisha"?"rgba(245,158,11,0.10)":"transparent", color:scriptStyle==="anisha"?"#fbbf24":"#4b5563", fontSize:13, fontWeight:600, cursor:"pointer", textAlign:"left" }}>
+                <div style={{ fontWeight:700 }}>🎬 Anisha Version</div>
+                <div style={{ fontSize:11, marginTop:2, opacity:0.7 }}>Hinglish · punchy · peer-to-peer</div>
+              </button>
+            </div>
+          </div>
           <div style={{ display:"flex", gap:10 }}>
             <button onClick={() => { setCreatorDesc(""); generateBrief(); }} style={{ ...S.btnG, flex:"0 0 auto", padding:"12px 18px", fontSize:13, color:"#4b5563", border:"1px solid #1a2540" }}>Skip →</button>
             <button onClick={generateBrief} style={{ ...S.btnP, flex:1 }}>Generate Scene + Script →</button>
@@ -5778,3 +5838,24 @@ appRoot.render(<App />);
 </script>
 </body>
 </html>
+  const ANISHA_SCRIPT = `Instagram creators, YouTube influencers… ek honest question- kya sirf ads aur brand deals se income stable hai?
+Facebook monetization is not enough, right?
+Ab imagine karo… my followers can call me.
+Yes — real 1:1 conversations. And I earn per call.
+Flashcall ke through, I just share my creator profile link in bio.
+One link for calls & chat. Bas link share karo — aur followers instantly connect kar sakte hain via audio calls, video calls, ya paid chat.
+No phone number required. Full privacy and safety.
+Main apna time set karti hoon. Apna price set karti hoon.
+No disturbance. No midnight calling.
+This is not free DMs. Only genuine fans.
+Convert audience to paid 1:1 calls.
+Build real fan connections. Earn from your time.
+Instant audio calls with followers.
+Instant video calls with fans.
+Priority direct messages.
+Instant withdrawal — no long waiting for payouts.
+Don't depend on one platform for income.
+Own your audience. Monetize your audience now.
+Start connecting today — share your Flashcall link.`;
+
+
