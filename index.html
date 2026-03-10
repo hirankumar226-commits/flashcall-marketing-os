@@ -609,9 +609,634 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
 });
 
 /* ════════════════════════════════════════════════════════════════════
+   VIDEO ANALYZER COMPONENT
+   Analyzes TikTok / Instagram Reel / YouTube Shorts URLs with Gemini.
+   • YouTube: uses Gemini's native video file support (fileData API)
+   • TikTok:  fetches oEmbed metadata, then text-analyzes
+   • Instagram: text-analyzes from URL context
+   ════════════════════════════════════════════════════════════════════ */
+
+// Detect platform from URL
+function detectPlatform(url) {
+  const u = url.toLowerCase();
+  if (u.includes("youtube.com") || u.includes("youtu.be"))  return "youtube";
+  if (u.includes("tiktok.com"))                              return "tiktok";
+  if (u.includes("instagram.com"))                           return "instagram";
+  return null;
+}
+
+// Fetch TikTok oEmbed (public, no auth)
+async function fetchTikTokMeta(url) {
+  try {
+    const r = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`);
+    if (!r.ok) return null;
+    return await r.json();
+  } catch (_) { return null; }
+}
+
+// Call Gemini with YouTube video file inline
+async function callGeminiWithVideo(videoUrl, textPrompt, maxTokens = 6000) {
+  const key = loadSettings().geminiApiKey;
+  if (!key || !key.trim()) throw new Error("No Gemini API key set.");
+  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key.trim()}`;
+  const body = {
+    contents: [{
+      role: "user",
+      parts: [
+        { fileData: { fileUri: videoUrl, mimeType: "video/mp4" } },
+        { text: textPrompt }
+      ]
+    }],
+    generationConfig: { maxOutputTokens: maxTokens, temperature: 0.9 }
+  };
+  const res = await fetch(apiUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`Gemini HTTP ${res.status}: ${t.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("Gemini returned empty response.");
+  return text;
+}
+
+// Extract JSON object from AI text
+function extractJSONObject(rawText) {
+  if (!rawText) throw new Error("Empty response.");
+  let t = rawText.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  const start = t.indexOf("{");
+  const end   = t.lastIndexOf("}");
+  if (start === -1 || end === -1) throw new Error("No JSON object found.");
+  t = t.slice(start, end + 1);
+  // Fix control chars
+  let out = ""; let inStr = false; let i = 0;
+  while (i < t.length) {
+    const ch = t[i];
+    if (inStr && ch === "\\") { out += ch; i++; if (i < t.length) { out += t[i]; i++; } continue; }
+    if (ch === '"') { inStr = !inStr; out += ch; i++; continue; }
+    if (inStr) {
+      const code = ch.charCodeAt(0);
+      if (code < 0x20) {
+        if (code === 10) out += "\\n"; else if (code === 13) out += "\\r"; else if (code === 9) out += "\\t"; else out += " ";
+      } else { out += ch; }
+    } else { out += ch; }
+    i++;
+  }
+  try { return JSON.parse(out); } catch (_) {}
+  try { return JSON.parse(t); } catch (e) { throw new Error("Parse failed: " + e.message); }
+}
+
+// AnalysisSection — renders one section of the analysis
+function AnalysisSection({ icon, title, color, children }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div style={{
+      background: "#090d1b", border: `1px solid ${color}20`,
+      borderRadius: 12, overflow: "hidden", marginBottom: 10,
+    }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: "100%", display: "flex", alignItems: "center",
+          gap: 10, padding: "14px 18px",
+          background: "transparent", border: "none", cursor: "pointer",
+          textAlign: "left",
+        }}>
+        <div style={{
+          width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+          background: `${color}15`, border: `1px solid ${color}25`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 14,
+        }}>{icon}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9" }}>{title}</div>
+        </div>
+        <div style={{ fontSize: 11, color: "#374151" }}>{open ? "▲" : "▼"}</div>
+      </button>
+      {open && (
+        <div style={{
+          padding: "0 18px 16px",
+          borderTop: `1px solid ${color}15`,
+          animation: "fadeIn 0.2s ease",
+        }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// BulletList — renders a string list as styled bullets
+function BulletList({ items, color }) {
+  if (!items || !items.length) return null;
+  return (
+    <ul style={{ listStyle: "none", padding: 0, margin: "12px 0 0" }}>
+      {items.map((item, i) => (
+        <li key={i} style={{
+          display: "flex", gap: 10, alignItems: "flex-start",
+          marginBottom: 8, fontSize: 13, color: "#cbd5e1", lineHeight: 1.65,
+        }}>
+          <span style={{
+            width: 6, height: 6, borderRadius: "50%",
+            background: color, flexShrink: 0, marginTop: 7,
+          }}/>
+          {item}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// TextBlock — renders prose text
+function TextBlock({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{
+      fontSize: 13, color: "#94a3b8", lineHeight: 1.75,
+      marginTop: 12, whiteSpace: "pre-wrap",
+    }}>
+      {text}
+    </div>
+  );
+}
+
+// The full VideoAnalyzer component
+function VideoAnalyzer({ onGenerateFromAnalysis }) {
+  const [url, setUrl]               = useState("");
+  const [analyzing, setAnalyzing]   = useState(false);
+  const [stage, setStage]           = useState("");
+  const [analysis, setAnalysis]     = useState(null);
+  const [platform, setPlatform]     = useState(null);
+  const [error, setError]           = useState(null);
+  const [genLoading, setGenLoading] = useState(false);
+
+  function handleUrlChange(e) {
+    setUrl(e.target.value);
+    setAnalysis(null);
+    setError(null);
+    setPlatform(detectPlatform(e.target.value));
+  }
+
+  const ANALYSIS_PROMPT = `You are an expert viral short-form video strategist.
+Analyze this video and explain WHY it likely performed well.
+Do NOT summarize the plot or captions. Focus ONLY on the mechanics that drive retention, watch time, shares, and views.
+
+Return ONLY a valid JSON object with this exact structure:
+{
+  "videoTitle": "inferred title or description of the video",
+  "estimatedPerformance": "brief note on why this type of video tends to perform well",
+  "hook": {
+    "description": "what the hook is in the first 3 seconds",
+    "whyItWorks": "specific reason this hook stops the scroll",
+    "psychologicalTrigger": "the exact psychological trigger used (e.g. curiosity gap, fear of missing out, social proof, surprise, identity, controversy)"
+  },
+  "visualTechniques": [
+    "specific visual element: camera movement / facial expression / text / props / transitions / colors / B-roll — and how it supports retention or clarity"
+  ],
+  "audioChoices": {
+    "analysis": "voice tone, pacing, music, sound effects and how they boost engagement or emotion"
+  },
+  "pacingAndEditing": {
+    "analysis": "speed of cuts, pattern interrupts, zooms, retention spikes and how these keep people watching"
+  },
+  "emotionalDrivers": [
+    "emotion triggered (humor / curiosity / relatability / tension / etc.) and how it increases shares or replays"
+  ],
+  "rewatchabilityTriggers": [
+    "specific element that prompts a replay — fast visuals, hidden details, surprises, etc."
+  ],
+  "viralSummary": [
+    "top reason 1 this video likely performed well — direct and actionable",
+    "top reason 2",
+    "top reason 3",
+    "top reason 4",
+    "top reason 5",
+    "top reason 6",
+    "top reason 7"
+  ]
+}`;
+
+  async function analyze() {
+    if (!url.trim() || analyzing) return;
+    const p = detectPlatform(url.trim());
+    if (!p) {
+      setError("Please enter a valid TikTok, Instagram Reel, or YouTube URL.");
+      return;
+    }
+    setAnalyzing(true);
+    setAnalysis(null);
+    setError(null);
+    setPlatform(p);
+
+    try {
+      let rawText = "";
+
+      if (p === "youtube") {
+        // YouTube: Gemini can process YouTube URLs natively
+        setStage("Loading YouTube video into Gemini…");
+        rawText = await callGeminiWithVideo(url.trim(), ANALYSIS_PROMPT, 6000);
+
+      } else {
+        // TikTok / Instagram: text-based analysis using URL + metadata
+        let metaContext = "";
+
+        if (p === "tiktok") {
+          setStage("Fetching TikTok metadata…");
+          const meta = await fetchTikTokMeta(url.trim());
+          if (meta) {
+            metaContext = `
+VIDEO METADATA FROM TIKTOK:
+- Title/Caption: ${meta.title || "Not available"}
+- Author: ${meta.author_name || "Unknown"}
+- Thumbnail: Available
+`;
+          }
+        }
+
+        setStage("Analyzing with AI…");
+        const contextPrompt = `I am sharing a ${p === "tiktok" ? "TikTok" : "Instagram Reel"} video URL for analysis.
+URL: ${url.trim()}
+${metaContext}
+
+Based on this URL, any available metadata, and your knowledge of viral ${p === "tiktok" ? "TikTok" : "Instagram Reel"} content patterns, perform a deep viral performance analysis.
+If you cannot directly access the video, analyze based on the URL structure, any title/metadata provided, and common patterns for high-performing ${p === "tiktok" ? "TikTok" : "Instagram Reel"} content in this niche.
+Be specific and actionable — assume the video is a high-performer in its category.
+
+${ANALYSIS_PROMPT}`;
+        rawText = await callGemini(
+          "You are an expert viral video strategist who deeply understands TikTok and Instagram Reel algorithms.",
+          contextPrompt,
+          6000
+        );
+      }
+
+      setStage("Parsing analysis…");
+      const parsed = extractJSONObject(rawText);
+      setAnalysis(parsed);
+
+    } catch (err) {
+      setError(err?.message || "Analysis failed. Please try again.");
+    } finally {
+      setAnalyzing(false);
+      setStage("");
+    }
+  }
+
+  async function generateInspiredConcepts() {
+    if (!analysis || genLoading) return;
+    setGenLoading(true);
+    try {
+      await onGenerateFromAnalysis(analysis);
+    } finally {
+      setGenLoading(false);
+    }
+  }
+
+  const PLATFORM_INFO = {
+    youtube:   { icon: "▶️", label: "YouTube Shorts", color: "#ff0000" },
+    tiktok:    { icon: "🎵", label: "TikTok",          color: "#69c9d0" },
+    instagram: { icon: "🎬", label: "Instagram Reel",  color: "#e1306c" },
+  };
+  const pInfo = platform ? PLATFORM_INFO[platform] : null;
+
+  return (
+    <div>
+      {/* URL Input */}
+      <div style={{
+        background: "#0a0d1c", border: "1px solid #0e1830",
+        borderRadius: 14, padding: 22, marginBottom: 20,
+      }}>
+        <label style={{
+          fontSize: 11, fontWeight: 600, color: "#374151",
+          display: "block", marginBottom: 8,
+          textTransform: "uppercase", letterSpacing: "0.7px",
+        }}>
+          Paste Video URL
+        </label>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ flex: 1, minWidth: 240, position: "relative" }}>
+            <input
+              value={url}
+              onChange={handleUrlChange}
+              onKeyDown={e => e.key === "Enter" && analyze()}
+              placeholder="https://www.tiktok.com/@user/video/... or https://youtube.com/shorts/..."
+              style={{
+                width: "100%", background: "#060912",
+                border: `1px solid ${error ? "#ef4444" : pInfo ? pInfo.color + "40" : "#111827"}`,
+                borderRadius: 9, padding: "11px 14px",
+                color: "#f1f5f9", fontSize: 13,
+                transition: "border-color 0.2s",
+              }}
+            />
+            {pInfo && (
+              <div style={{
+                position: "absolute", right: 12, top: "50%",
+                transform: "translateY(-50%)",
+                fontSize: 10, fontWeight: 700, color: pInfo.color,
+                background: `${pInfo.color}15`, border: `1px solid ${pInfo.color}30`,
+                padding: "2px 8px", borderRadius: 20,
+              }}>
+                {pInfo.icon} {pInfo.label}
+              </div>
+            )}
+          </div>
+          <button
+            onClick={analyze}
+            disabled={analyzing || !url.trim()}
+            style={{
+              background: analyzing || !url.trim()
+                ? "#111827"
+                : "linear-gradient(135deg, #f59e0b, #ef4444)",
+              border: "none", borderRadius: 9,
+              padding: "11px 22px",
+              color: analyzing || !url.trim() ? "#374151" : "white",
+              fontSize: 13, fontWeight: 700,
+              cursor: analyzing || !url.trim() ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", gap: 8,
+              whiteSpace: "nowrap",
+              boxShadow: analyzing || !url.trim() ? "none" : "0 4px 18px rgba(239,68,68,.3)",
+            }}>
+            {analyzing
+              ? <><Spinner size={13} /> {stage || "Analyzing…"}</>
+              : "🔍 Analyze Video"}
+          </button>
+        </div>
+
+        {error && (
+          <div style={{
+            marginTop: 10, fontSize: 12, color: "#ef4444",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <span>✗</span> {error}
+          </div>
+        )}
+
+        {/* Platform support note */}
+        <div style={{
+          marginTop: 12, display: "flex", gap: 16, flexWrap: "wrap",
+        }}>
+          {[
+            { icon: "▶️", label: "YouTube Shorts", note: "Full video analysis", color: "#ff0000" },
+            { icon: "🎵", label: "TikTok",          note: "Metadata + AI analysis", color: "#69c9d0" },
+            { icon: "🎬", label: "Instagram Reel",  note: "AI pattern analysis", color: "#e1306c" },
+          ].map(p => (
+            <div key={p.label} style={{
+              display: "flex", alignItems: "center", gap: 6,
+              fontSize: 11, color: "#374151",
+            }}>
+              <span>{p.icon}</span>
+              <span style={{ color: p.color, fontWeight: 600 }}>{p.label}</span>
+              <span>· {p.note}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Analyzing state */}
+      {analyzing && (
+        <div style={{
+          display: "flex", flexDirection: "column",
+          alignItems: "center", justifyContent: "center",
+          padding: "50px 20px", gap: 14,
+        }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[0, 1, 2].map(i => (
+              <div key={i} style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: "#f59e0b",
+                animation: `pulse 1.2s ease ${i * 0.2}s infinite`,
+              }}/>
+            ))}
+          </div>
+          <div style={{ fontSize: 13, color: "#4b5563" }}>{stage || "Analyzing…"}</div>
+          <div style={{ fontSize: 11, color: "#1e2d4a", maxWidth: 340, textAlign: "center" }}>
+            Breaking down hook, visuals, audio, pacing, emotional drivers, and viral factors.
+          </div>
+        </div>
+      )}
+
+      {/* Analysis Results */}
+      {analysis && !analyzing && (
+        <div style={{ animation: "fadeUp 0.35s ease" }}>
+
+          {/* Header card */}
+          <div style={{
+            background: "linear-gradient(135deg, rgba(245,158,11,0.08), rgba(239,68,68,0.06))",
+            border: "1px solid rgba(245,158,11,0.2)",
+            borderRadius: 14, padding: "18px 22px", marginBottom: 16,
+            display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12,
+            flexWrap: "wrap",
+          }}>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{
+                fontSize: 10, color: "#f59e0b", fontWeight: 700,
+                textTransform: "uppercase", letterSpacing: "1px", marginBottom: 6,
+              }}>
+                🔍 VIRAL ANALYSIS COMPLETE
+              </div>
+              {analysis.videoTitle && (
+                <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 6 }}>
+                  {analysis.videoTitle}
+                </div>
+              )}
+              {analysis.estimatedPerformance && (
+                <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
+                  {analysis.estimatedPerformance}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <CopyButton
+                text={JSON.stringify(analysis, null, 2)}
+                label="Copy Analysis"
+              />
+              <button
+                onClick={generateInspiredConcepts}
+                disabled={genLoading}
+                style={{
+                  background: genLoading
+                    ? "#111827"
+                    : "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                  border: "none", borderRadius: 7,
+                  padding: "7px 16px", color: genLoading ? "#374151" : "white",
+                  fontSize: 12, fontWeight: 700, cursor: genLoading ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", gap: 6,
+                  boxShadow: genLoading ? "none" : "0 3px 12px rgba(99,102,241,.35)",
+                }}>
+                {genLoading
+                  ? <><Spinner size={11} /> Generating…</>
+                  : "⚡ Generate Inspired Concepts"}
+              </button>
+            </div>
+          </div>
+
+          {/* 1. Hook */}
+          {analysis.hook && (
+            <AnalysisSection icon="🔴" title="1. Hook (First 3 Seconds)" color="#ef4444">
+              <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+                {analysis.hook.description && (
+                  <div>
+                    <div style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 5 }}>What is it</div>
+                    <div style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.7 }}>{analysis.hook.description}</div>
+                  </div>
+                )}
+                {analysis.hook.whyItWorks && (
+                  <div>
+                    <div style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 5 }}>Why it works</div>
+                    <div style={{ fontSize: 13, color: "#cbd5e1", lineHeight: 1.7 }}>{analysis.hook.whyItWorks}</div>
+                  </div>
+                )}
+                {analysis.hook.psychologicalTrigger && (
+                  <div style={{
+                    background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.15)",
+                    borderRadius: 8, padding: "8px 14px",
+                    display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap",
+                  }}>
+                    <span style={{ fontSize: 10, color: "#ef4444", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px" }}>Trigger:</span>
+                    <span style={{ fontSize: 13, color: "#fca5a5", fontWeight: 600 }}>{analysis.hook.psychologicalTrigger}</span>
+                  </div>
+                )}
+              </div>
+            </AnalysisSection>
+          )}
+
+          {/* 2. Visual Techniques */}
+          {analysis.visualTechniques && (
+            <AnalysisSection icon="🎥" title="2. Visual Techniques" color="#8b5cf6">
+              <BulletList items={Array.isArray(analysis.visualTechniques) ? analysis.visualTechniques : [analysis.visualTechniques]} color="#8b5cf6" />
+            </AnalysisSection>
+          )}
+
+          {/* 3. Audio */}
+          {analysis.audioChoices && (
+            <AnalysisSection icon="🎵" title="3. Audio Choices" color="#06b6d4">
+              <TextBlock text={analysis.audioChoices?.analysis || (typeof analysis.audioChoices === "string" ? analysis.audioChoices : "")} />
+            </AnalysisSection>
+          )}
+
+          {/* 4. Pacing & Editing */}
+          {analysis.pacingAndEditing && (
+            <AnalysisSection icon="✂️" title="4. Pacing & Editing" color="#f59e0b">
+              <TextBlock text={analysis.pacingAndEditing?.analysis || (typeof analysis.pacingAndEditing === "string" ? analysis.pacingAndEditing : "")} />
+            </AnalysisSection>
+          )}
+
+          {/* 5. Emotional Drivers */}
+          {analysis.emotionalDrivers && (
+            <AnalysisSection icon="❤️" title="5. Emotional Drivers" color="#ec4899">
+              <BulletList items={Array.isArray(analysis.emotionalDrivers) ? analysis.emotionalDrivers : [analysis.emotionalDrivers]} color="#ec4899" />
+            </AnalysisSection>
+          )}
+
+          {/* 6. Rewatchability */}
+          {analysis.rewatchabilityTriggers && (
+            <AnalysisSection icon="🔁" title="6. Rewatchability Triggers" color="#10b981">
+              <BulletList items={Array.isArray(analysis.rewatchabilityTriggers) ? analysis.rewatchabilityTriggers : [analysis.rewatchabilityTriggers]} color="#10b981" />
+            </AnalysisSection>
+          )}
+
+          {/* 7. Viral Summary */}
+          {analysis.viralSummary && Array.isArray(analysis.viralSummary) && analysis.viralSummary.length > 0 && (
+            <div style={{
+              background: "linear-gradient(135deg, rgba(99,102,241,0.08), rgba(139,92,246,0.06))",
+              border: "1px solid rgba(99,102,241,0.2)",
+              borderRadius: 14, padding: "18px 20px", marginBottom: 10,
+            }}>
+              <div style={{
+                fontSize: 11, fontWeight: 700, color: "#818cf8",
+                textTransform: "uppercase", letterSpacing: "1px", marginBottom: 14,
+              }}>
+                🚀 7. Viral Summary — Top {analysis.viralSummary.length} Reasons
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {analysis.viralSummary.map((reason, i) => (
+                  <div key={i} style={{
+                    display: "flex", gap: 12, alignItems: "flex-start",
+                    background: "rgba(0,0,0,0.3)", borderRadius: 9,
+                    padding: "10px 14px",
+                  }}>
+                    <div style={{
+                      width: 22, height: 22, borderRadius: 6, flexShrink: 0,
+                      background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.3)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11, fontWeight: 800, color: "#818cf8",
+                    }}>
+                      {i + 1}
+                    </div>
+                    <div style={{ fontSize: 13, color: "#e2e8f0", lineHeight: 1.65 }}>
+                      {reason}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Generate inspired concepts CTA */}
+          <div style={{
+            background: "#0a0d1c", border: "1px solid #0e1830",
+            borderRadius: 12, padding: "16px 20px",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            flexWrap: "wrap", gap: 12, marginTop: 4,
+          }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9", marginBottom: 3 }}>
+                Generate concepts inspired by this video
+              </div>
+              <div style={{ fontSize: 12, color: "#374151" }}>
+                Uses the viral patterns above to create 10 fresh concepts for your brand
+              </div>
+            </div>
+            <button
+              onClick={generateInspiredConcepts}
+              disabled={genLoading}
+              style={{
+                background: genLoading ? "#111827" : "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                border: "none", borderRadius: 9,
+                padding: "11px 22px", color: genLoading ? "#374151" : "white",
+                fontSize: 13, fontWeight: 700, cursor: genLoading ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", gap: 8,
+                boxShadow: genLoading ? "none" : "0 4px 18px rgba(99,102,241,.35)",
+              }}>
+              {genLoading
+                ? <><Spinner size={13} /> Generating…</>
+                : "⚡ Generate 10 Inspired Concepts →"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Empty state */}
+      {!analysis && !analyzing && !error && (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#374151" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🔍</div>
+          <div style={{ fontSize: 15, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>
+            Decode any viral video
+          </div>
+          <div style={{
+            fontSize: 13, color: "#374151", maxWidth: 400,
+            margin: "0 auto", lineHeight: 1.75,
+          }}>
+            Paste a TikTok, Instagram Reel, or YouTube Shorts URL above.
+            The AI will break down exactly why it performed well — then generate
+            10 concepts that use the same viral mechanics for your brand.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
    GENERATOR PAGE
    ════════════════════════════════════════════════════════════════════ */
 function GeneratorPage() {
+  const [genMode, setGenMode]       = useState("generate"); // "generate" | "analyze"
   const [focus, setFocus]           = useState("");
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress]     = useState("");
@@ -772,6 +1397,126 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     }
   }
 
+  // Generate concepts inspired by a video analysis
+  async function generateFromAnalysis(analysis) {
+    const s = loadSettings();
+    if (!s.geminiApiKey || !s.geminiApiKey.trim()) {
+      showToast("Add your Gemini API key in ⚙️ Settings first.", "error");
+      return;
+    }
+    setGenMode("generate");
+    setGenerating(true);
+    setConcepts([]);
+    setProgress("Building concepts from viral analysis…");
+
+    try {
+      const history = loadHistory();
+      const prevList = history.slice(0, 50).map((h, i) =>
+        `${i + 1}. [${h.platform}] "${h.title}" — Hook: "${h.hook}"`
+      ).join("\n") || "None";
+
+      const viralInsights = [
+        analysis.hook?.description && `HOOK PATTERN: ${analysis.hook.description}`,
+        analysis.hook?.psychologicalTrigger && `PSYCHOLOGICAL TRIGGER: ${analysis.hook.psychologicalTrigger}`,
+        analysis.hook?.whyItWorks && `WHY IT WORKS: ${analysis.hook.whyItWorks}`,
+        Array.isArray(analysis.visualTechniques) && `VISUAL TECHNIQUES: ${analysis.visualTechniques.join(" | ")}`,
+        analysis.audioChoices?.analysis && `AUDIO APPROACH: ${analysis.audioChoices.analysis}`,
+        analysis.pacingAndEditing?.analysis && `PACING: ${analysis.pacingAndEditing.analysis}`,
+        Array.isArray(analysis.emotionalDrivers) && `EMOTIONAL DRIVERS: ${analysis.emotionalDrivers.join(" | ")}`,
+        Array.isArray(analysis.rewatchabilityTriggers) && `REWATCH TRIGGERS: ${analysis.rewatchabilityTriggers.join(" | ")}`,
+        Array.isArray(analysis.viralSummary) && `TOP VIRAL REASONS:\n${analysis.viralSummary.map((r,i) => `  ${i+1}. ${r}`).join("\n")}`,
+      ].filter(Boolean).join("\n\n");
+
+      setProgress("Generating 10 inspired concepts…");
+
+      const userPrompt = `Generate EXACTLY 10 unique short-form video concepts for ${loadSettings().productName || "our brand"}.
+Distribution: 5 Instagram Reels + 5 TikTok Videos.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INSPIRATION: VIRAL VIDEO ANALYSIS
+Adapt these proven viral mechanics for our brand. Do NOT copy — use the patterns.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${viralInsights}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUSLY USED — DO NOT REPEAT:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${prevList}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANGLE VARIETY (one per concept):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1: hot take  2: personal story  3: myth-busting  4: step-by-step how-to  5: behind-the-scenes
+6: data / stats revelation  7: POV storytelling  8: before vs after  9: nobody talks about this  10: trend reaction
+
+Use the viral mechanics from the analysis to inform the hook style, pacing, emotional trigger, and visual approach for each concept.
+
+OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fences.
+[
+  {
+    "platform": "Instagram Reel",
+    "title": "short internal title",
+    "angle": "angle name from list above",
+    "pillar": "Success Stories | Education | Platform Tips | Industry Insights | Social Proof",
+    "hook": "spoken hook sentence (0-3s, max 10 words)",
+    "hookOnScreen": "3-5 word bold text overlay",
+    "script": {
+      "hook": "full 0-3s script",
+      "body": "full 3-45s script with [visual cues]",
+      "cta": "full 45-60s CTA"
+    },
+    "visualStyle": "talking head | POV | walk-and-talk | text-on-screen | B-roll with VO",
+    "audioSuggestion": "audio style inspired by the analyzed video",
+    "hashtags": "10-14 hashtags"
+  }
+]`;
+
+      const rawText = await callGemini(buildBrandContext(), userPrompt, 9000);
+      setProgress("Parsing concepts…");
+      const parsed = extractJSONArray(rawText);
+
+      if (!Array.isArray(parsed) || parsed.length === 0) {
+        throw new Error("AI returned an invalid concept list. Please try again.");
+      }
+
+      const finalConcepts = parsed.map((c, i) => ({
+        id:              uid(),
+        platform:        typeof c.platform === "string" && c.platform.includes("TikTok") ? "TikTok Video" : "Instagram Reel",
+        title:           c.title          || `Concept ${i + 1}`,
+        angle:           c.angle          || ANGLES[i % ANGLES.length],
+        pillar:          c.pillar         || "",
+        hook:            c.hook           || c.script?.hook || "",
+        hookOnScreen:    c.hookOnScreen   || "",
+        script: {
+          hook: c.script?.hook || c.hook || "",
+          body: c.script?.body           || "",
+          cta:  c.script?.cta            || "",
+        },
+        visualStyle:     c.visualStyle    || "talking head",
+        audioSuggestion: c.audioSuggestion|| "",
+        hashtags:        c.hashtags       || "",
+        used:            false,
+        inspiredBy:      analysis.videoTitle || "Analyzed video",
+      }));
+
+      const ig = finalConcepts.filter(c => c.platform === "Instagram Reel");
+      const tt = finalConcepts.filter(c => c.platform === "TikTok Video");
+      const all = [...ig, ...tt];
+
+      setConcepts(all);
+      lsSet(K_DAILY, { date: todayStr(), concepts: all, focus: `Inspired by: ${analysis.videoTitle || "analyzed video"}` });
+      appendHistory(all);
+      showToast(`${all.length} inspired concepts generated!`);
+
+    } catch (err) {
+      const msg = err?.message || String(err);
+      showToast(msg.length > 100 ? msg.slice(0, 100) + "…" : msg, "error");
+    } finally {
+      setGenerating(false);
+      setProgress("");
+    }
+  }
+
   function handleRemove(id) {
     setConcepts(prev => {
       const next = prev.filter(c => c.id !== id);
@@ -795,22 +1540,56 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
       {toast && <Toast {...toast} />}
 
       {/* Header */}
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ marginBottom: 20 }}>
         <h1 style={{
           fontSize: 22, fontWeight: 800, color: "#f1f5f9",
           letterSpacing: "-0.5px", marginBottom: 5,
           fontFamily: "'Bricolage Grotesque', sans-serif",
         }}>
-          Daily Concept Generator
+          {genMode === "generate" ? "Daily Concept Generator" : "Video Analyzer"}
         </h1>
         <p style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-          10 unique Instagram Reel + TikTok concepts per day, guaranteed no repeats.
-          {histCount > 0 && (
-            <span style={{ marginLeft: 8, color: "#8b5cf6", fontWeight: 600 }}>
-              📚 {histCount} past concepts tracked for dedup
-            </span>
-          )}
+          {genMode === "generate"
+            ? <>10 unique Instagram Reel + TikTok concepts per day, guaranteed no repeats.{histCount > 0 && <span style={{ marginLeft: 8, color: "#8b5cf6", fontWeight: 600 }}>📚 {histCount} tracked</span>}</>
+            : "Paste any TikTok, Instagram Reel, or YouTube Shorts URL. Get a deep viral breakdown + 10 inspired concepts."}
         </p>
+      </div>
+
+      {/* Mode tabs */}
+      <div style={{
+        display: "flex", gap: 6, marginBottom: 22,
+        background: "#0a0d1c", border: "1px solid #0e1830",
+        borderRadius: 12, padding: 5,
+      }}>
+        {[
+          { id: "generate", icon: "⚡", label: "Generate Concepts" },
+          { id: "analyze",  icon: "🔍", label: "Analyze a Video" },
+        ].map(m => (
+          <button
+            key={m.id}
+            onClick={() => setGenMode(m.id)}
+            style={{
+              flex: 1, padding: "10px 16px",
+              background: genMode === m.id
+                ? m.id === "analyze"
+                  ? "linear-gradient(135deg, rgba(245,158,11,0.15), rgba(239,68,68,0.12))"
+                  : "rgba(99,102,241,0.15)"
+                : "transparent",
+              border: genMode === m.id
+                ? `1px solid ${m.id === "analyze" ? "rgba(245,158,11,0.3)" : "rgba(99,102,241,0.3)"}`
+                : "1px solid transparent",
+              borderRadius: 9,
+              color: genMode === m.id
+                ? m.id === "analyze" ? "#fbbf24" : "#818cf8"
+                : "#374151",
+              fontSize: 13, fontWeight: genMode === m.id ? 700 : 400,
+              cursor: "pointer", display: "flex", alignItems: "center",
+              justifyContent: "center", gap: 7,
+              transition: "all 0.18s",
+            }}>
+            <span>{m.icon}</span> {m.label}
+          </button>
+        ))}
       </div>
 
       {/* No API key warning */}
@@ -837,174 +1616,212 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
         </div>
       )}
 
-      {/* Input panel */}
-      <div style={{
-        background: "#0a0d1c", border: "1px solid #0e1830",
-        borderRadius: 14, padding: 22, marginBottom: 24,
-      }}>
-        <label style={{
-          fontSize: 11, fontWeight: 600, color: "#374151",
-          display: "block", marginBottom: 8,
-          textTransform: "uppercase", letterSpacing: "0.7px",
-        }}>
-          Today's Focus / Brief <span style={{ color: "#1e2d4a", fontWeight: 400 }}>(optional)</span>
-        </label>
-        <textarea
-          value={focus}
-          onChange={e => setFocus(e.target.value)}
-          rows={3}
-          placeholder="e.g. 'Focus on career coaches this week. We just hit 1,000 consultants — use as social proof. New booking feature launched. Avoid financial advisor content for now.'"
-          style={{
-            width: "100%", background: "#060912",
-            border: "1px solid #111827", borderRadius: 9,
-            padding: "11px 14px", color: "#f1f5f9",
-            fontSize: 13, resize: "vertical",
-            lineHeight: 1.65, marginBottom: 18,
-          }}
-        />
+      {/* ── ANALYZE MODE ── */}
+      {genMode === "analyze" && (
+        <VideoAnalyzer onGenerateFromAnalysis={generateFromAnalysis} />
+      )}
 
-        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-          <button
-            onClick={generate}
-            disabled={generating}
-            style={{
-              background: generating
-                ? "#111827"
-                : "linear-gradient(135deg, #6366f1, #8b5cf6)",
-              border: "none", borderRadius: 9,
-              padding: "12px 28px",
-              color: generating ? "#374151" : "white",
-              fontSize: 13, fontWeight: 700,
-              cursor: generating ? "not-allowed" : "pointer",
-              display: "flex", alignItems: "center", gap: 9,
-              boxShadow: generating ? "none" : "0 4px 18px rgba(99,102,241,.35)",
-              transition: "all 0.2s",
+      {/* ── GENERATE MODE ── */}
+      {genMode === "generate" && (
+        <div>
+          {/* Input panel */}
+          <div style={{
+            background: "#0a0d1c", border: "1px solid #0e1830",
+            borderRadius: 14, padding: 22, marginBottom: 24,
+          }}>
+            <label style={{
+              fontSize: 11, fontWeight: 600, color: "#374151",
+              display: "block", marginBottom: 8,
+              textTransform: "uppercase", letterSpacing: "0.7px",
             }}>
-            {generating
-              ? <><Spinner size={13} /> {progress || "Generating…"}</>
-              : "⚡ Generate 10 Concepts"}
-          </button>
+              Today's Focus / Brief <span style={{ color: "#1e2d4a", fontWeight: 400 }}>(optional)</span>
+            </label>
+            <textarea
+              value={focus}
+              onChange={e => setFocus(e.target.value)}
+              rows={3}
+              placeholder="e.g. 'Focus on career coaches this week. We just hit 1,000 consultants — use as social proof. New booking feature launched. Avoid financial advisor content for now.'"
+              style={{
+                width: "100%", background: "#060912",
+                border: "1px solid #111827", borderRadius: 9,
+                padding: "11px 14px", color: "#f1f5f9",
+                fontSize: 13, resize: "vertical",
+                lineHeight: 1.65, marginBottom: 18,
+              }}
+            />
 
-          {hasToday && !generating && (
-            <div style={{ fontSize: 12, color: "#374151", display: "flex", alignItems: "center", gap: 6 }}>
-              <span style={{ color: "#10b981" }}>✓</span>
-              {concepts.length} concepts ready ·
+            <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <button
                 onClick={generate}
+                disabled={generating}
                 style={{
-                  background: "none", border: "none",
-                  color: "#6366f1", cursor: "pointer",
-                  fontSize: 12, padding: "0 4px",
-                  textDecoration: "underline", textDecorationStyle: "dotted",
+                  background: generating
+                    ? "#111827"
+                    : "linear-gradient(135deg, #6366f1, #8b5cf6)",
+                  border: "none", borderRadius: 9,
+                  padding: "12px 28px",
+                  color: generating ? "#374151" : "white",
+                  fontSize: 13, fontWeight: 700,
+                  cursor: generating ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", gap: 9,
+                  boxShadow: generating ? "none" : "0 4px 18px rgba(99,102,241,.35)",
+                  transition: "all 0.2s",
                 }}>
-                Regenerate →
+                {generating
+                  ? <><Spinner size={13} /> {progress || "Generating…"}</>
+                  : "⚡ Generate 10 Concepts"}
               </button>
-            </div>
-          )}
-        </div>
-      </div>
 
-      {/* Concepts output */}
-      {concepts.length > 0 && !generating && (
-        <div>
-          {/* Instagram Reels */}
-          {igConcepts.length > 0 && (
-            <div style={{ marginBottom: 32 }}>
-              <SectionDivider
-                icon="🎬" title="Instagram Reels"
-                count={igConcepts.length} color="#e1306c"
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {igConcepts.map((c, i) => (
-                  <ConceptCard
-                    key={c.id}
-                    concept={c}
-                    index={i}
-                    onRemove={handleRemove}
+              {hasToday && !generating && (
+                <div style={{ fontSize: 12, color: "#374151", display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ color: "#10b981" }}>✓</span>
+                  {concepts.length} concepts ready ·
+                  <button
+                    onClick={generate}
+                    style={{
+                      background: "none", border: "none",
+                      color: "#6366f1", cursor: "pointer",
+                      fontSize: 12, padding: "0 4px",
+                      textDecoration: "underline", textDecorationStyle: "dotted",
+                    }}>
+                    Regenerate →
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Concepts output */}
+          {concepts.length > 0 && !generating && (
+            <div>
+              {/* Inspired-by banner */}
+              {concepts[0]?.inspiredBy && (
+                <div style={{
+                  background: "rgba(245,158,11,0.07)",
+                  border: "1px solid rgba(245,158,11,0.18)",
+                  borderRadius: 9, padding: "9px 14px",
+                  fontSize: 12, color: "#fbbf24",
+                  marginBottom: 16,
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                  <span>🔍</span>
+                  Concepts inspired by: <strong>{concepts[0].inspiredBy}</strong>
+                </div>
+              )}
+
+              {/* Instagram Reels */}
+              {igConcepts.length > 0 && (
+                <div style={{ marginBottom: 32 }}>
+                  <SectionDivider
+                    icon="🎬" title="Instagram Reels"
+                    count={igConcepts.length} color="#e1306c"
                   />
-                ))}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {igConcepts.map((c, i) => (
+                      <ConceptCard
+                        key={c.id}
+                        concept={c}
+                        index={i}
+                        onRemove={handleRemove}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TikTok Videos */}
+              {ttConcepts.length > 0 && (
+                <div style={{ marginBottom: 32 }}>
+                  <SectionDivider
+                    icon="🎵" title="TikTok Videos"
+                    count={ttConcepts.length} color="#69c9d0"
+                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {ttConcepts.map((c, i) => (
+                      <ConceptCard
+                        key={c.id}
+                        concept={c}
+                        index={i}
+                        onRemove={handleRemove}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Summary bar */}
+              <div style={{
+                background: "rgba(99,102,241,0.05)",
+                border: "1px solid rgba(99,102,241,0.15)",
+                borderRadius: 10, padding: "12px 18px",
+                display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center",
+                fontSize: 12, marginBottom: 8,
+              }}>
+                <span style={{ color: "#6366f1", fontWeight: 700 }}>📊 Today's batch</span>
+                <span style={{ color: "#94a3b8" }}>🎬 {igConcepts.length} Instagram Reels</span>
+                <span style={{ color: "#94a3b8" }}>🎵 {ttConcepts.length} TikTok Videos</span>
+                <span style={{ color: "#374151" }}>📚 {histCount} total concepts tracked</span>
               </div>
             </div>
           )}
 
-          {/* TikTok Videos */}
-          {ttConcepts.length > 0 && (
-            <div style={{ marginBottom: 32 }}>
-              <SectionDivider
-                icon="🎵" title="TikTok Videos"
-                count={ttConcepts.length} color="#69c9d0"
-              />
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {ttConcepts.map((c, i) => (
-                  <ConceptCard
-                    key={c.id}
-                    concept={c}
-                    index={i}
-                    onRemove={handleRemove}
-                  />
+          {/* Loading state */}
+          {generating && (
+            <div style={{
+              display: "flex", flexDirection: "column",
+              alignItems: "center", justifyContent: "center",
+              padding: "60px 20px", gap: 16,
+            }}>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                {[0, 1, 2].map(i => (
+                  <div key={i} style={{
+                    width: 8, height: 8, borderRadius: "50%",
+                    background: "#6366f1",
+                    animation: `pulse 1.2s ease ${i * 0.2}s infinite`,
+                  }}/>
                 ))}
+              </div>
+              <div style={{ fontSize: 13, color: "#4b5563", textAlign: "center" }}>
+                {progress || "Generating…"}
+              </div>
+              <div style={{ fontSize: 11, color: "#1e2d4a", textAlign: "center", maxWidth: 300 }}>
+                Gemini is creating 10 unique concepts with full UGC scripts, tailored to your brand.
               </div>
             </div>
           )}
 
-          {/* Summary bar */}
-          <div style={{
-            background: "rgba(99,102,241,0.05)",
-            border: "1px solid rgba(99,102,241,0.15)",
-            borderRadius: 10, padding: "12px 18px",
-            display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center",
-            fontSize: 12, marginBottom: 8,
-          }}>
-            <span style={{ color: "#6366f1", fontWeight: 700 }}>📊 Today's batch</span>
-            <span style={{ color: "#94a3b8" }}>🎬 {igConcepts.length} Instagram Reels</span>
-            <span style={{ color: "#94a3b8" }}>🎵 {ttConcepts.length} TikTok Videos</span>
-            <span style={{ color: "#374151" }}>📚 {histCount} total concepts tracked</span>
-          </div>
-        </div>
-      )}
-
-      {/* Loading state */}
-      {generating && (
-        <div style={{
-          display: "flex", flexDirection: "column",
-          alignItems: "center", justifyContent: "center",
-          padding: "60px 20px", gap: 16,
-        }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {[0, 1, 2].map(i => (
-              <div key={i} style={{
-                width: 8, height: 8, borderRadius: "50%",
-                background: "#6366f1",
-                animation: `pulse 1.2s ease ${i * 0.2}s infinite`,
-              }}/>
-            ))}
-          </div>
-          <div style={{ fontSize: 13, color: "#4b5563", textAlign: "center" }}>
-            {progress || "Generating…"}
-          </div>
-          <div style={{ fontSize: 11, color: "#1e2d4a", textAlign: "center", maxWidth: 300 }}>
-            Gemini is creating 10 unique concepts with full UGC scripts, tailored to your brand.
-          </div>
-        </div>
-      )}
-
-      {/* Empty state */}
-      {concepts.length === 0 && !generating && (
-        <div style={{
-          textAlign: "center", padding: "50px 20px",
-          color: "#374151",
-        }}>
-          <div style={{ fontSize: 52, marginBottom: 18 }}>🎬</div>
-          <div style={{ fontSize: 16, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>
-            Ready to create today's content
-          </div>
-          <div style={{
-            fontSize: 13, color: "#374151",
-            maxWidth: 400, margin: "0 auto", lineHeight: 1.75,
-          }}>
-            Click "Generate 10 Concepts" to get 5 Instagram Reels + 5 TikTok scripts.
-            Each batch is unique — your full history is tracked to guarantee no repeats, ever.
-          </div>
+          {/* Empty state */}
+          {concepts.length === 0 && !generating && (
+            <div style={{
+              textAlign: "center", padding: "50px 20px",
+              color: "#374151",
+            }}>
+              <div style={{ fontSize: 52, marginBottom: 18 }}>🎬</div>
+              <div style={{ fontSize: 16, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>
+                Ready to create today's content
+              </div>
+              <div style={{
+                fontSize: 13, color: "#374151",
+                maxWidth: 400, margin: "0 auto", lineHeight: 1.75,
+              }}>
+                Click "Generate 10 Concepts" to get 5 Instagram Reels + 5 TikTok scripts.
+                Each batch is unique — your full history is tracked to guarantee no repeats, ever.
+              </div>
+              <div style={{ marginTop: 16 }}>
+                <button
+                  onClick={() => setGenMode("analyze")}
+                  style={{
+                    background: "rgba(245,158,11,0.08)",
+                    border: "1px solid rgba(245,158,11,0.2)",
+                    borderRadius: 9, padding: "10px 20px",
+                    color: "#fbbf24", fontSize: 12, fontWeight: 600,
+                    cursor: "pointer",
+                  }}>
+                  🔍 Or analyze a viral video first →
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
