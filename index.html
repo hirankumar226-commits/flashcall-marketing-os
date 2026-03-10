@@ -4989,13 +4989,17 @@ function AdStudioPage() {
     setError("");
     if (!apiKey) return setError("No Gemini API key found — add it in Settings first.");
     if (!videoUrl.trim()) return setError("Paste a YouTube Shorts URL to continue.");
+    // Validate YouTube URL
+    const trimmedUrl = videoUrl.trim();
+    const isYouTube = trimmedUrl.includes("youtube.com") || trimmedUrl.includes("youtu.be");
+    if (!isYouTube) return setError("Only YouTube Shorts links are supported right now. For Instagram or TikTok reels, download the video — upload support is coming soon.");
     setStep("analyzing");
     setLoadingMsg("Watching the video and reading every visual detail...");
     try {
-      const data = await gemini("gemini-1.5-pro", {
+      const data = await gemini("gemini-2.0-flash", {
         contents: [{
           parts: [
-            { file_data: { mime_type: "video/mp4", file_uri: videoUrl.trim() } },
+            { file_data: { mime_type: "video/mp4", file_uri: trimmedUrl } },
             { text: `You are a UGC creative director. Deeply analyze this viral video to extract its complete visual DNA so we can perfectly recreate it with a different creator for Flashcall (a platform where fans book personal 1:1 calls with creators). Return ONLY valid JSON, no extra text:
 
 {
@@ -5057,7 +5061,7 @@ function AdStudioPage() {
       setGeneratedImage(imgSrc);
 
       setLoadingMsg("Writing the Flashcall script...");
-      const scriptRes = await gemini("gemini-1.5-flash", {
+      const scriptRes = await gemini("gemini-2.0-flash", {
         contents: [{
           parts: [{ text: `You are a top UGC scriptwriter for Flashcall — a platform where fans book personal 1:1 video or audio calls with their favorite creator.
 
