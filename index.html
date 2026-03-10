@@ -4976,16 +4976,16 @@ function AdStudioPage() {
 
   // Try a prioritised list of models — stops at the first that succeeds
   const VISION_MODELS = [
+    "gemini-2.5-flash",
     "gemini-2.5-pro-exp-03-25",
     "gemini-2.0-flash-lite",
     "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
   ];
   const TEXT_MODELS = [
-    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",
     "gemini-2.5-pro-exp-03-25",
+    "gemini-2.0-flash-lite",
     "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
   ];
 
   const gemini = async (model, body) => {
