@@ -321,9 +321,12 @@ async function checkVeoOperation(operationName, geminiKey) {
 
 // Fetch a Gemini Files URI as a blob URL for browser playback / download.
 async function fetchVeoVideoBlob(fileUri, geminiKey) {
-  const url = `${fileUri}?alt=media&key=${encodeURIComponent(geminiKey)}`;
+  // URI may already contain ?alt=media — append key correctly
+  const sep = fileUri.includes("?") ? "&" : "?";
+  const baseUri = fileUri.includes("alt=media") ? fileUri : `${fileUri}${sep}alt=media`;
+  const url = `${baseUri}${baseUri.includes("?") ? "&" : "?"}key=${encodeURIComponent(geminiKey)}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Video fetch HTTP ${res.status}`);
+  if (!res.ok) throw new Error(`Video fetch HTTP ${res.status} — file may have expired (48h limit)`);
   const blob = await res.blob();
   return URL.createObjectURL(blob);
 }
