@@ -4586,59 +4586,40 @@ function CharactersPage() {
 /* ════════════════════════════════════════════════════════════════════
    VIDEO JOBS PAGE — Track Veo 3.1 background video generation
    ════════════════════════════════════════════════════════════════════ */
-// Live elapsed time + progress bar for rendering jobs
-function ElapsedTimer({ createdAt, onTimeout }) {
+function ElapsedTimer({ createdAt }) {
   const [elapsed, setElapsed] = useState(0);
-  const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
   useEffect(() => {
     const start = new Date(createdAt).getTime();
-    function tick() {
-      const diff = Date.now() - start;
-      setElapsed(diff);
-      if (diff >= TIMEOUT_MS && onTimeout) onTimeout();
-    }
+    function tick() { setElapsed(Date.now() - start); }
     tick();
     const iv = setInterval(tick, 1000);
     return () => clearInterval(iv);
   }, [createdAt]);
 
-  const secs  = Math.floor(elapsed / 1000);
-  const mins  = Math.floor(secs / 60);
-  const s     = secs % 60;
-  const pct   = Math.min(100, (elapsed / TIMEOUT_MS) * 100);
-  const timed = elapsed >= TIMEOUT_MS;
-
-  const label = mins > 0
-    ? `${mins}m ${String(s).padStart(2,"0")}s`
-    : `${s}s`;
-
-  // Animated shimmer progress bar
-  const barColor = timed ? "#ef4444" : pct > 70 ? "#f59e0b" : "#6366f1";
+  const secs = Math.floor(elapsed / 1000);
+  const mins = Math.floor(secs / 60);
+  const s    = secs % 60;
+  const label = mins > 0 ? `${mins}m ${String(s).padStart(2,"0")}s` : `${s}s`;
 
   return (
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
         <Spinner size={10}/>
-        <span style={{ fontSize: 11, color: timed ? "#ef4444" : "#6366f1" }}>
-          {timed
-            ? "⚠ Taking longer than expected — may have failed. Try refreshing or resubmit."
-            : `Veo 3.1 rendering… ${label} elapsed`}
+        <span style={{ fontSize: 11, color: "#6366f1" }}>
+          HeyGen rendering… {label} elapsed
         </span>
       </div>
       <div style={{ height: 4, background: "#0e1830", borderRadius: 4, overflow: "hidden", width: "100%", maxWidth: 320 }}>
         <div style={{
-          height: "100%",
-          width: `${pct}%`,
-          background: `linear-gradient(90deg, ${barColor}, ${barColor}99)`,
+          height: "100%", width: "100%",
+          background: "linear-gradient(90deg, #6366f1, #8b5cf6)",
           borderRadius: 4,
-          transition: "width 1s linear, background 0.5s",
-          backgroundSize: "200% 100%",
-          animation: timed ? "none" : "shimmer 1.5s infinite linear",
+          animation: "shimmer 1.5s infinite linear",
         }}/>
       </div>
       <div style={{ fontSize: 10, color: "#374151", marginTop: 3 }}>
-        {timed ? "15:00+ elapsed" : `Est. ${Math.max(0, Math.ceil((TIMEOUT_MS - elapsed) / 60000))} min remaining (max 15 min)`}
+        Rendering on HeyGen servers — this page can be closed and reopened
       </div>
     </div>
   );
@@ -4673,17 +4654,8 @@ function VideoJobsPage() {
 
     setPolling(true);
     let updated = [...currentJobs];
-    const TIMEOUT_MS = 30 * 60 * 1000;
 
     for (const job of pending) {
-      const elapsed = Date.now() - new Date(job.createdAt).getTime();
-      if (elapsed > TIMEOUT_MS) {
-        updated = updated.map(j => j.id === job.id
-          ? { ...j, status: "failed", error: "Timed out after 30 min — try generating again." }
-          : j
-        );
-        continue;
-      }
       if (job.provider === "heygen") {
         if (!heygenKey || !job.heygenVideoId) continue;
         try {
@@ -4694,12 +4666,20 @@ function VideoJobsPage() {
               : j
             );
           } else if (st.status === "failed") {
+            // Capture every available error field HeyGen may return
+            const reason = st.error || st.error_detail || st.message || st.msg || "HeyGen did not provide a reason.";
             updated = updated.map(j => j.id === job.id
-              ? { ...j, status: "failed", error: st.error || "HeyGen generation failed." }
+              ? { ...j, status: "failed", error: reason }
               : j
             );
           }
-        } catch (e) { console.warn("HeyGen poll error:", e.message); }
+        } catch (e) {
+          // Network/parse error during polling — surface it instead of silently swallowing
+          updated = updated.map(j => j.id === job.id
+            ? { ...j, status: "failed", error: `Poll error: ${e.message}` }
+            : j
+          );
+        }
       } else {
         // Legacy Veo jobs
         if (!geminiKey || !job.operationName) continue;
@@ -4848,21 +4828,7 @@ function VideoJobsPage() {
                     {" · "}{new Date(job.createdAt).toLocaleString()}
                   </div>
                   {(job.status === "queued" || job.status === "processing") && (
-                    <ElapsedTimer
-                      createdAt={job.createdAt}
-                      onTimeout={() => {
-                        const current = loadVideoJobs();
-                        const j = current.find(x => x.id === job.id);
-                        if (j && (j.status === "queued" || j.status === "processing")) {
-                          const updated = current.map(x => x.id === job.id
-                            ? { ...x, status: "failed", error: "Timed out after 15 min. Veo may be overloaded — try resubmitting." }
-                            : x
-                          );
-                          saveVideoJobs(updated);
-                          setJobs(updated);
-                        }
-                      }}
-                    />
+                    <ElapsedTimer createdAt={job.createdAt} />
                   )}
                   {job.status === "completed" && (job.videoUrl || job.videoFileUri) && (
                     <div style={{ marginTop: 6 }}>
@@ -4921,7 +4887,32 @@ function VideoJobsPage() {
                     </div>
                   )}
                   {job.status === "failed" && (
-                    <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>✗ {job.error || "Generation failed"}</div>
+                    <div style={{
+                      marginTop: 8,
+                      background: "rgba(239,68,68,0.07)",
+                      border: "1px solid rgba(239,68,68,0.25)",
+                      borderRadius: 8, padding: "9px 12px",
+                    }}>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: "#ef4444", marginBottom: 4 }}>
+                        ✗ Generation Failed
+                      </div>
+                      <div style={{
+                        fontSize: 11, color: "#fca5a5", lineHeight: 1.6,
+                        fontFamily: "'DM Mono', monospace", wordBreak: "break-word",
+                      }}>
+                        {job.error || "HeyGen did not return a reason. Try refreshing status or resubmitting."}
+                      </div>
+                      <button
+                        onClick={() => navigator.clipboard?.writeText(job.error || "").catch(() => {})}
+                        style={{
+                          marginTop: 6, background: "rgba(239,68,68,0.1)",
+                          border: "1px solid rgba(239,68,68,0.2)", borderRadius: 5,
+                          padding: "3px 10px", fontSize: 10, color: "#f87171",
+                          cursor: "pointer",
+                        }}>
+                        📋 Copy error
+                      </button>
+                    </div>
                   )}
                 </div>
 
