@@ -104,6 +104,7 @@ const { useState, useEffect, useRef, useCallback, useMemo, memo } = React;
 /* ── STORAGE KEYS ─────────────────────────────────────────────────── */
 const K_AUTH       = "fcr_auth_v3";
 const K_SETTINGS   = "fcr_settings_v3";
+const K_VOICES     = "fcr_voices_v1";       // [{id,name,script,createdAt}]
 const K_HISTORY    = "fcr_history_v3";     // [{id,title,hook,angle,platform,date}]
 const K_DAILY      = "fcr_daily_v3";       // {date:string, concepts:[], focus:string}
 const K_PW         = "fcr_pw_v3";          // separate password storage
@@ -156,6 +157,22 @@ function lsDel(key) {
 }
 
 /* ── SETTINGS HELPERS ─────────────────────────────────────────────── */
+function loadVoices() {
+  const voices = lsGet(K_VOICES, []);
+  // Ensure Amisha is always present as the default
+  if (!voices.find(v => v.id === "amisha")) {
+    voices.unshift({
+      id: "amisha",
+      name: "Amisha (Hinglish)",
+      script: "Instagram creators, YouTube influencers… ek honest question- kya sirf ads aur brand deals se income stable hai?\nFacebook monetization is not enough, right?\nAb imagine karo… my followers can call me.\nYes — real 1:1 conversations. And I earn per call.\nFlashcall ke through, I just share my creator profile link in bio.\nOne link for calls & chat. Bas link share karo — aur followers instantly connect kar sakte hain via audio calls, video calls, ya paid chat.\nNo phone number required. Full privacy and safety.\nMain apna time set karti hoon. Apna price set karti hoon.\nNo disturbance. No midnight calling.\nThis is not free DMs. Only genuine fans.\nConvert audience to paid 1:1 calls.\nBuild real fan connections. Earn from your time.\nInstant audio calls with followers.\nInstant video calls with fans.\nPriority direct messages.\nInstant withdrawal — no long waiting for payouts.\nDon't depend on one platform for income.\nOwn your audience. Monetize your audience now.\nStart connecting today — share your Flashcall link.",
+      createdAt: "2026-03-01",
+    });
+    lsSet(K_VOICES, voices);
+  }
+  return voices;
+}
+function saveVoices(voices) { lsSet(K_VOICES, voices); }
+
 function loadSettings() {
   const saved = lsGet(K_SETTINGS, {});
   return { ...DEFAULTS, ...saved };
@@ -1534,7 +1551,7 @@ function TextBlock({ text }) {
 }
 
 // The full VideoAnalyzer component
-function VideoAnalyzer({ onGenerateFromAnalysis }) {
+function VideoAnalyzer({ onGenerateFromAnalysis, selectedVoiceId, setSelectedVoiceId, voices }) {
   const [url, setUrl]               = useState("");
   const [analyzing, setAnalyzing]   = useState(false);
   const [stage, setStage]           = useState("");
@@ -2009,7 +2026,25 @@ ${ANALYSIS_PROMPT}`;
             <div>
               <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em", marginBottom:8 }}>TODAY'S FOCUS / BRIEF <span style={{ color:"#1e3060" }}>(OPTIONAL)</span></div>
               <textarea value={vaFocus} onChange={e => setVaFocus(e.target.value)} rows={2} placeholder="e.g. Focus on creators with 10k+ followers who aren't monetizing yet"
-                style={{ width:"100%", boxSizing:"border-box", background:"#060912", border:"1px solid #111827", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, resize:"none", outline:"none", fontFamily:"'DM Sans',sans-serif", lineHeight:1.6 }}/>
+                style={{ width:"100%", boxSizing:"border-box", background:"#060912", border:"1px solid #111827", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, resize:"none", outline:"none", fontFamily:"'DM Sans',sans-serif", lineHeight:1.6 }}/>\n            </div>\n            <div style={{marginTop:14}}>
+              <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:6 }}>
+                <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em" }}>CREATOR VOICE <span style={{color:"#1e3060"}}>(OPTIONAL)</span></div>
+                <button onClick={() => { window._fcr_setPage && window._fcr_setPage("voices"); }}
+                  style={{ fontSize:11, color:"#6366f1", background:"none", border:"1px solid #1a2540", borderRadius:6, padding:"3px 10px", cursor:"pointer" }}>+ Manage Voices</button>
+              </div>
+              <select value={selectedVoiceId} onChange={e => setSelectedVoiceId(e.target.value)}
+                style={{ width:"100%", background:"#060912", border:"1px solid "+(selectedVoiceId?"#6366f1":"#111827"), borderRadius:9, padding:"10px 14px", color:selectedVoiceId?"#f1f5f9":"#374151", fontSize:13, cursor:"pointer", outline:"none", appearance:"none", backgroundImage:"url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E\")", backgroundRepeat:"no-repeat", backgroundPosition:"right 12px center" }}>
+                <option value="">— No voice (default style) —</option>
+                {voices.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+              </select>
+              {selectedVoiceId && voices.find(v => v.id === selectedVoiceId) && (
+                <div style={{ marginTop:8, padding:"10px 12px", background:"#06080f", border:"1px solid #0c1428", borderRadius:8 }}>
+                  <div style={{ fontSize:11, color:"#6366f1", fontWeight:600, marginBottom:4 }}>✦ Voice preview</div>
+                  <div style={{ fontSize:12, color:"#4b5563", lineHeight:1.6, maxHeight:60, overflow:"hidden" }}>
+                    {voices.find(v => v.id === selectedVoiceId).script.slice(0,150)}…
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -2043,7 +2078,8 @@ ${ANALYSIS_PROMPT}`;
 function GeneratorPage() {
   const [genMode, setGenMode]       = useState("generate"); // "generate" | "analyze"
   const [focus, setFocus]           = useState("");
-  const [creatorVoice, setCreatorVoice] = useState("");
+  const [selectedVoiceId, setSelectedVoiceId] = useState("");
+  const [voices, setVoices]               = useState(() => loadVoices());
   const [viralCtx, setViralCtx]         = useState(null);
   const [generating, setGenerating] = useState(false);
   const [progress, setProgress]     = useState("");
@@ -2116,7 +2152,9 @@ function GeneratorPage() {
 
       setProgress(`Generating ${conceptCount} unique concepts...`);
 
-      const systemPrompt = buildBrandContext() + (creatorVoice.trim() ? "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCREATOR VOICE REFERENCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCRITICAL INSTRUCTION — CREATOR VOICE MATCHING:\nYou MUST write every script in the EXACT voice of the reference script below. This means:\n- Same language mix (if Hinglish → write in Hinglish throughout)\n- Same sentence length and rhythm (short punchy lines → keep them short)\n- Same energy and tone (conversational, peer-to-peer → NOT corporate or formal)\n- Same structural patterns (rhetorical questions, direct address, emotional beats)\n- DO NOT write in polished English if the reference is not polished English\n- DO NOT use long sentences if the reference uses short ones\n- Every line should feel like it came from the same creator\n\nREFERENCE SCRIPT (match this voice exactly):\n" + creatorVoice.trim().slice(0, 2000) : "");
+      const activeVoice = voices.find(v => v.id === selectedVoiceId);
+      const creatorVoiceScript = activeVoice ? activeVoice.script : "";
+      const systemPrompt = buildBrandContext() + (creatorVoiceScript.trim() ? "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCREATOR VOICE REFERENCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCRITICAL INSTRUCTION — CREATOR VOICE MATCHING:\nYou MUST write every script in the EXACT voice of the reference script below. This means:\n- Same language mix (if Hinglish → write in Hinglish throughout)\n- Same sentence length and rhythm (short punchy lines → keep them short)\n- Same energy and tone (conversational, peer-to-peer → NOT corporate or formal)\n- Same structural patterns (rhetorical questions, direct address, emotional beats)\n- DO NOT write in polished English if the reference is not polished English\n- DO NOT use long sentences if the reference uses short ones\n- Every line should feel like it came from the same creator\n\nREFERENCE SCRIPT (match this voice exactly):\n" + creatorVoiceScript.trim().slice(0, 2000) : "");
 
       // Theme context
       const theme      = themes.find(t => t.id === selectedTheme);
@@ -2176,7 +2214,7 @@ PLATFORM + ANGLE ASSIGNMENTS (follow exactly):
 ${angleAssignments}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${creatorVoice.trim() ? "CREATOR VOICE OVERRIDE: Write ALL scripts in the EXACT voice of the reference script. If reference is Hinglish, write Hinglish. If reference uses short 1-line punches, use short lines. Language match is MORE IMPORTANT than word count rules below.\n\n" : ""}SCRIPT RULES — READ THESE CAREFULLY:
+${creatorVoiceScript.trim() ? "CREATOR VOICE OVERRIDE: Write ALL scripts in the EXACT voice of the reference script. If reference is Hinglish, write Hinglish. If reference uses short 1-line punches, use short lines. Language match is MORE IMPORTANT than word count rules below.\n\n" : ""}SCRIPT RULES — READ THESE CAREFULLY:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Every script is spoken by a real person to camera. It must sound like a voice memo, not a marketing email.
 
@@ -2361,6 +2399,7 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     setConceptCount(vaCount);
     setSelectedPlatforms(vaPlatforms);
     if (vaFocus) setTodayFocus(vaFocus);
+    if (opts.voiceId) setSelectedVoiceId(opts.voiceId);
     // Store analysis as context for the generate function
     setViralCtx(analysis);
     // Switch to generate tab — user customizes then clicks Generate themselves
@@ -2478,7 +2517,7 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
 
       {/* ── ANALYZE MODE ── */}
       {genMode === "analyze" && (
-        <VideoAnalyzer onGenerateFromAnalysis={generateFromAnalysis} />
+        <VideoAnalyzer onGenerateFromAnalysis={generateFromAnalysis} selectedVoiceId={selectedVoiceId} setSelectedVoiceId={setSelectedVoiceId} voices={voices} />
       )}
 
       {/* ── GENERATE MODE ── */}
@@ -2618,21 +2657,7 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
                     {n}
                   </button>
                 ))}
-                <input
-                  type="number"
-                  min={1} max={30}
-                  value={conceptCount}
-                  onChange={e => {
-                    const v = Math.min(30, Math.max(1, parseInt(e.target.value) || 1));
-                    setConceptCount(v);
-                  }}
-                  style={{
-                    width: 70, padding: "7px 10px",
-                    background: "#060912", border: "1px solid #1a2540",
-                    borderRadius: 9, color: "#f1f5f9", fontSize: 13,
-                    textAlign: "center",
-                  }}
-                />
+                
               </div>
             </div>
 
@@ -2658,46 +2683,41 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
               }}
             />
 
-            {/* ── CREATOR VOICE / REFERENCE SCRIPT ── */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-              <label style={{
-                fontSize: 11, fontWeight: 600, color: "#374151",
-                textTransform: "uppercase", letterSpacing: "0.7px",
-              }}>
-                Creator Voice <span style={{ color: "#1e2d4a", fontWeight: 400 }}>(optional — paste a script to match tone &amp; style)</span>
-              </label>
-              <button
-                onClick={() => setCreatorVoice(`Instagram creators, YouTube influencers… ek honest question- kya sirf ads aur brand deals se income stable hai?\nFacebook monetization is not enough, right?\nAb imagine karo… my followers can call me.\nYes — real 1:1 conversations. And I earn per call.\nFlashcall ke through, I just share my creator profile link in bio.\nOne link for calls & chat. Bas link share karo — aur followers instantly connect kar sakte hain via audio calls, video calls, ya paid chat.\nNo phone number required. Full privacy and safety.\nMain apna time set karti hoon. Apna price set karti hoon.\nNo disturbance. No midnight calling.\nThis is not free DMs. Only genuine fans.\nConvert audience to paid 1:1 calls.\nBuild real fan connections. Earn from your time.\nInstant audio calls with followers.\nInstant video calls with fans.\nPriority direct messages.\nInstant withdrawal — no long waiting for payouts.\nDon't depend on one platform for income.\nOwn your audience. Monetize your audience now.\nStart connecting today — share your Flashcall link.`)}
-                style={{ fontSize: 11, background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)", borderRadius: 6, color: "#818cf8", padding: "3px 10px", cursor: "pointer", fontWeight: 600 }}>
-                ✦ Load Amisha's Voice
-              </button>
-            </div>
-            <div style={{ position: "relative" }}>
-              <textarea
-                value={creatorVoice}
-                onChange={e => setCreatorVoice(e.target.value)}
-                rows={4}
-                placeholder={"e.g. paste Amisha's script here and AI will write in her Hinglish style, tone, and energy..."}
-                style={{
-                  width: "100%", background: "#060912",
-                  border: "1px solid " + (creatorVoice ? "#6366f1" : "#111827"), borderRadius: 9,
-                  padding: "11px 14px", color: "#f1f5f9",
-                  fontSize: 13, resize: "vertical",
-                  lineHeight: 1.65, marginBottom: 4, boxSizing: "border-box",
-                }}
-              />
-              {creatorVoice && (
-                <button onClick={() => setCreatorVoice("")}
-                  style={{ position: "absolute", top: 8, right: 8, background: "#1a2540", border: "none", borderRadius: 6, color: "#6b7280", fontSize: 11, padding: "3px 8px", cursor: "pointer" }}>
-                  ✕ clear
+            {/* ── CREATOR VOICE DROPDOWN ── */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", textTransform: "uppercase", letterSpacing: "0.7px" }}>
+                  Creator Voice <span style={{ color: "#1e2d4a", fontWeight: 400 }}>(optional)</span>
+                </label>
+                <button onClick={() => { window._fcr_setPage && window._fcr_setPage("voices"); }}
+                  style={{ fontSize: 11, color: "#6366f1", background: "none", border: "1px solid #1a2540", borderRadius: 6, padding: "3px 10px", cursor: "pointer" }}>
+                  + Manage Voices
                 </button>
+              </div>
+              <select
+                value={selectedVoiceId}
+                onChange={e => setSelectedVoiceId(e.target.value)}
+                style={{
+                  width: "100%", background: "#060912", border: "1px solid " + (selectedVoiceId ? "#6366f1" : "#111827"),
+                  borderRadius: 9, padding: "10px 14px", color: selectedVoiceId ? "#f1f5f9" : "#374151",
+                  fontSize: 13, cursor: "pointer", outline: "none", appearance: "none",
+                  backgroundImage: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b7280' d='M6 8L1 3h10z'/%3E%3C/svg%3E\")",
+                  backgroundRepeat: "no-repeat", backgroundPosition: "right 12px center",
+                }}>
+                <option value="">— No voice (default style) —</option>
+                {voices.map(v => (
+                  <option key={v.id} value={v.id}>{v.name}</option>
+                ))}
+              </select>
+              {selectedVoiceId && voices.find(v => v.id === selectedVoiceId) && (
+                <div style={{ marginTop: 8, padding: "10px 12px", background: "#06080f", border: "1px solid #0c1428", borderRadius: 8 }}>
+                  <div style={{ fontSize: 11, color: "#6366f1", fontWeight: 600, marginBottom: 4 }}>✦ Voice preview</div>
+                  <div style={{ fontSize: 12, color: "#4b5563", lineHeight: 1.6, maxHeight: 60, overflow: "hidden" }}>
+                    {voices.find(v => v.id === selectedVoiceId).script.slice(0, 150)}…
+                  </div>
+                </div>
               )}
             </div>
-            {creatorVoice && (
-              <div style={{ fontSize: 11, color: "#6366f1", marginBottom: 14 }}>
-                ✦ AI will match this creator's voice, language mix, and tone
-              </div>
-            )}
 
             {/* ── GENERATE BUTTON ── */}
             <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
@@ -5460,6 +5480,7 @@ function MainApp({ onLogout }) {
     { id: "history",    icon: "📚",  label: "History"    },
     { id: "characters", icon: "👥",  label: "Characters" },
     { id: "videos",     icon: "🍌",  label: "Videos"     },
+    { id: "voices",     icon: "🎙️",  label: "Voices"     },
     { id: "adstudio",   icon: "🎬",  label: "Ad Studio"  },
     { id: "settings",   icon: "⚙️",  label: "Settings"   },
   ];
@@ -5619,6 +5640,7 @@ function MainApp({ onLogout }) {
         {page === "history"    && <HistoryPage   />}
         {page === "characters" && <CharactersPage />}
         {page === "videos"     && <VideoJobsPage  />}
+        {page === "voices"     && <VoicesPage      />}
         {page === "adstudio"   && <AdStudioPage   />}
         {page === "settings"   && <SettingsPage  />}
       </div>
@@ -5769,6 +5791,123 @@ function LoginScreen({ onAuth }) {
 /* ════════════════════════════════════════════════════════════════════
    ROOT APP — Authentication gate
    ════════════════════════════════════════════════════════════════════ */
+/* ════════════════════════════════════════════════════════════════════
+   VOICES PAGE
+   ════════════════════════════════════════════════════════════════════ */
+function VoicesPage() {
+  const [voices, setVoices]         = React.useState(() => loadVoices());
+  const [editing, setEditing]       = React.useState(null);
+  const [adding, setAdding]         = React.useState(false);
+  const [newName, setNewName]       = React.useState("");
+  const [newScript, setNewScript]   = React.useState("");
+  const [editName, setEditName]     = React.useState("");
+  const [editScript, setEditScript] = React.useState("");
+
+  function saveAll(updated) { saveVoices(updated); setVoices(updated); }
+
+  function addVoice() {
+    if (!newName.trim() || !newScript.trim()) return;
+    const v = { id: "v_"+Date.now(), name: newName.trim(), script: newScript.trim(), createdAt: new Date().toISOString().slice(0,10) };
+    saveAll([...voices, v]);
+    setNewName(""); setNewScript(""); setAdding(false);
+  }
+
+  function deleteVoice(id) {
+    if (!window.confirm("Delete this voice?")) return;
+    saveAll(voices.filter(v => v.id !== id));
+  }
+
+  function startEdit(v) { setEditing(v.id); setEditName(v.name); setEditScript(v.script); }
+  function saveEdit(id) { saveAll(voices.map(v => v.id === id ? {...v, name:editName, script:editScript} : v)); setEditing(null); }
+
+  const card = { background:"#060812", border:"1px solid #0c1428", borderRadius:14, padding:"20px 22px", marginBottom:14 };
+
+  return (
+    <div style={{ maxWidth:720, margin:"0 auto", padding:"32px 24px" }}>
+      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:28 }}>
+        <div>
+          <h2 style={{ margin:0, fontSize:22, fontWeight:800, color:"#f1f5f9", fontFamily:"'Bricolage Grotesque',sans-serif" }}>
+            🎙️ Creator Voices
+          </h2>
+          <p style={{ margin:"6px 0 0", fontSize:13, color:"#374151" }}>
+            Save reference scripts. Pick one when generating to match that creator's exact voice, language mix, and style.
+          </p>
+        </div>
+        <button onClick={() => { setAdding(true); setNewName(""); setNewScript(""); }}
+          style={{ padding:"10px 18px", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", border:"none", borderRadius:10, color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}>
+          + Add Voice
+        </button>
+      </div>
+
+      {adding && (
+        <div style={{...card, border:"1px solid #6366f1"}}>
+          <div style={{ fontSize:12, fontWeight:700, color:"#818cf8", marginBottom:14, textTransform:"uppercase", letterSpacing:"0.7px" }}>New Creator Voice</div>
+          <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Creator name — e.g. Amisha (Hinglish), Rahul (English), etc."
+            style={{ width:"100%", boxSizing:"border-box", background:"#04060e", border:"1px solid #1a2540", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, marginBottom:12, outline:"none" }} />
+          <textarea value={newScript} onChange={e => setNewScript(e.target.value)} rows={9}
+            placeholder="Paste the creator's reference script here. The AI will write in their exact voice — language mix, sentence rhythm, tone, and energy. Tip: use a real script they've already recorded."
+            style={{ width:"100%", boxSizing:"border-box", background:"#04060e", border:"1px solid #1a2540", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, resize:"vertical", outline:"none", lineHeight:1.65 }} />
+          <div style={{ display:"flex", gap:10, marginTop:14 }}>
+            <button onClick={addVoice} disabled={!newName.trim()||!newScript.trim()}
+              style={{ padding:"9px 20px", background:(!newName.trim()||!newScript.trim())?"#111827":"linear-gradient(135deg,#6366f1,#8b5cf6)", border:"none", borderRadius:8, color:(!newName.trim()||!newScript.trim())?"#374151":"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}>
+              Save Voice
+            </button>
+            <button onClick={() => setAdding(false)}
+              style={{ padding:"9px 20px", background:"transparent", border:"1px solid #1a2540", borderRadius:8, color:"#6b7280", fontSize:13, cursor:"pointer" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {voices.length === 0 && !adding && (
+        <div style={{ textAlign:"center", padding:"60px 0", color:"#374151" }}>
+          <div style={{ fontSize:40, marginBottom:12 }}>🎙️</div>
+          <div style={{ fontSize:15, fontWeight:600, color:"#4b5563", marginBottom:6 }}>No voices saved yet</div>
+          <div style={{ fontSize:13 }}>Click "+ Add Voice" to save a creator's reference script.</div>
+        </div>
+      )}
+
+      {voices.map(v => (
+        <div key={v.id} style={card}>
+          {editing === v.id ? (
+            <>
+              <input value={editName} onChange={e => setEditName(e.target.value)}
+                style={{ width:"100%", boxSizing:"border-box", background:"#04060e", border:"1px solid #6366f1", borderRadius:8, padding:"9px 12px", color:"#f1f5f9", fontSize:13, marginBottom:10, outline:"none" }} />
+              <textarea value={editScript} onChange={e => setEditScript(e.target.value)} rows={9}
+                style={{ width:"100%", boxSizing:"border-box", background:"#04060e", border:"1px solid #1a2540", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, resize:"vertical", outline:"none", lineHeight:1.65 }} />
+              <div style={{ display:"flex", gap:10, marginTop:12 }}>
+                <button onClick={() => saveEdit(v.id)}
+                  style={{ padding:"8px 18px", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", border:"none", borderRadius:8, color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}>Save</button>
+                <button onClick={() => setEditing(null)}
+                  style={{ padding:"8px 18px", background:"transparent", border:"1px solid #1a2540", borderRadius:8, color:"#6b7280", fontSize:13, cursor:"pointer" }}>Cancel</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:10 }}>
+                <div>
+                  <div style={{ fontSize:15, fontWeight:700, color:"#f1f5f9" }}>{v.name}</div>
+                  <div style={{ fontSize:11, color:"#374151", marginTop:2 }}>Added {v.createdAt} · {v.script.length} chars · {v.script.split("\n").length} lines</div>
+                </div>
+                <div style={{ display:"flex", gap:8, flexShrink:0, marginLeft:12 }}>
+                  <button onClick={() => startEdit(v)}
+                    style={{ padding:"6px 14px", background:"transparent", border:"1px solid #1a2540", borderRadius:7, color:"#6b7280", fontSize:12, cursor:"pointer" }}>Edit</button>
+                  <button onClick={() => deleteVoice(v.id)}
+                    style={{ padding:"6px 14px", background:"transparent", border:"1px solid rgba(239,68,68,0.3)", borderRadius:7, color:"#ef4444", fontSize:12, cursor:"pointer" }}>Delete</button>
+                </div>
+              </div>
+              <div style={{ fontSize:13, color:"#4b5563", lineHeight:1.75, background:"#04060e", borderRadius:8, padding:"12px 14px", whiteSpace:"pre-line", maxHeight:130, overflow:"hidden" }}>
+                {v.script.slice(0,300)}{v.script.length>300?"…":""}
+              </div>
+            </>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function App() {
   const [authed,  setAuthed]  = useState(() => lsGet(K_AUTH, null) === "1");
   const [syncing, setSyncing] = useState(false);
@@ -5838,24 +5977,3 @@ appRoot.render(<App />);
 </script>
 </body>
 </html>
-  const ANISHA_SCRIPT = `Instagram creators, YouTube influencers… ek honest question- kya sirf ads aur brand deals se income stable hai?
-Facebook monetization is not enough, right?
-Ab imagine karo… my followers can call me.
-Yes — real 1:1 conversations. And I earn per call.
-Flashcall ke through, I just share my creator profile link in bio.
-One link for calls & chat. Bas link share karo — aur followers instantly connect kar sakte hain via audio calls, video calls, ya paid chat.
-No phone number required. Full privacy and safety.
-Main apna time set karti hoon. Apna price set karti hoon.
-No disturbance. No midnight calling.
-This is not free DMs. Only genuine fans.
-Convert audience to paid 1:1 calls.
-Build real fan connections. Earn from your time.
-Instant audio calls with followers.
-Instant video calls with fans.
-Priority direct messages.
-Instant withdrawal — no long waiting for payouts.
-Don't depend on one platform for income.
-Own your audience. Monetize your audience now.
-Start connecting today — share your Flashcall link.`;
-
-
