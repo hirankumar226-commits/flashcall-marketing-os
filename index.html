@@ -1541,7 +1541,10 @@ function VideoAnalyzer({ onGenerateFromAnalysis }) {
   const [analysis, setAnalysis]     = useState(null);
   const [platform, setPlatform]     = useState(null);
   const [error, setError]           = useState(null);
-  const [genLoading, setGenLoading] = useState(false);
+  const [genLoading, setGenLoading]       = useState(false);
+  const [vaConceptCount, setVaConceptCount] = useState(10);
+  const [vaPlatforms, setVaPlatforms]       = useState(["Instagram Reel", "TikTok Video"]);
+  const [vaFocus, setVaFocus]               = useState("");
 
   function handleUrlChange(e) {
     setUrl(e.target.value);
@@ -1659,7 +1662,7 @@ ${ANALYSIS_PROMPT}`;
     if (!analysis || genLoading) return;
     setGenLoading(true);
     try {
-      await onGenerateFromAnalysis(analysis);
+      await onGenerateFromAnalysis(analysis, { conceptCount: vaConceptCount, platforms: vaPlatforms, focus: vaFocus });
     } finally {
       setGenLoading(false);
     }
@@ -1971,11 +1974,45 @@ ${ANALYSIS_PROMPT}`;
                 display: "flex", alignItems: "center", gap: 8,
                 boxShadow: genLoading ? "none" : "0 4px 18px rgba(99,102,241,.35)",
               }}>
-              {genLoading
-                ? <><Spinner size={13} /> Generating…</>
-                : "⚡ Generate 10 Inspired Concepts →"}
+              {genLoading ? <><Spinner size={13} /> Generating…</> : "⚡ Generate " + vaConceptCount + " Inspired Concepts →"}
             </button>
           </div>
+
+          {/* ── Options panel ── */}
+          <div style={{ marginTop:16, padding:"16px 18px", background:"#06080f", border:"1px solid #0c1428", borderRadius:12 }}>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em", marginBottom:8 }}>PLATFORMS</div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                {["Instagram Reel","TikTok Video","YouTube Shorts"].map(p => {
+                  const sel = vaPlatforms.includes(p);
+                  const col = p==="Instagram Reel"?"#e1306c":p==="TikTok Video"?"#69c9d0":"#ff0000";
+                  return (
+                    <button key={p} onClick={() => setVaPlatforms(prev => sel && prev.length>1 ? prev.filter(x=>x!==p) : prev.includes(p) ? prev : [...prev,p])}
+                      style={{ padding:"6px 14px", borderRadius:20, border:"1px solid "+(sel?col+"60":"#1a2540"), background:sel?col+"12":"transparent", color:sel?col:"#374151", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif" }}>
+                      {p} {sel?"✓":""}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div style={{ marginBottom:12 }}>
+              <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em", marginBottom:8 }}>HOW MANY CONCEPTS?</div>
+              <div style={{ display:"flex", gap:8 }}>
+                {[1,5,10,15,20].map(n => (
+                  <button key={n} onClick={() => setVaConceptCount(n)}
+                    style={{ width:40, height:36, borderRadius:8, border:"1px solid "+(vaConceptCount===n?"#6366f1":"#1a2540"), background:vaConceptCount===n?"rgba(99,102,241,0.12)":"transparent", color:vaConceptCount===n?"#818cf8":"#374151", fontSize:13, fontWeight:700, cursor:"pointer" }}>
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize:10, color:"#374151", letterSpacing:"0.1em", marginBottom:8 }}>TODAY'S FOCUS / BRIEF <span style={{ color:"#1e3060" }}>(OPTIONAL)</span></div>
+              <textarea value={vaFocus} onChange={e => setVaFocus(e.target.value)} rows={2} placeholder="e.g. Focus on creators with 10k+ followers who aren't monetizing yet"
+                style={{ width:"100%", boxSizing:"border-box", background:"#060912", border:"1px solid #111827", borderRadius:8, padding:"10px 12px", color:"#f1f5f9", fontSize:13, resize:"none", outline:"none", fontFamily:"'DM Sans',sans-serif", lineHeight:1.6 }}/>
+            </div>
+          </div>
+
         </div>
       )}
 
@@ -2289,12 +2326,19 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
   }
 
   // Generate concepts inspired by a video analysis
-  async function generateFromAnalysis(analysis) {
+  async function generateFromAnalysis(analysis, opts = {}) {
     const s = loadSettings();
-    if (!s.geminiApiKey || !s.geminiApiKey.trim()) {
-      showToast("Add your Gemini API key in ⚙️ Settings first.", "error");
+    const activeKey = aiProvider === "claude" ? s.claudeApiKey : s.geminiApiKey;
+    if (!activeKey || !activeKey.trim()) {
+      showToast(`Add your ${aiProvider === "claude" ? "Claude" : "Gemini"} API key in ⚙️ Settings first.`, "error");
       return;
     }
+    const vaCount     = opts.conceptCount || 10;
+    const vaPlatforms = opts.platforms    || ["Instagram Reel", "TikTok Video"];
+    const vaFocus     = opts.focus        || "";
+    setConceptCount(vaCount);
+    setSelectedPlatforms(vaPlatforms);
+    if (vaFocus) setTodayFocus(vaFocus);
     setGenMode("generate");
     setGenerating(true);
     setConcepts([]);
@@ -2339,8 +2383,9 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
 
       setProgress("Generating 10 inspired concepts…");
 
-      const userPrompt = `Generate EXACTLY 10 unique short-form video concepts for ${safe(loadSettings().productName || "our brand", 40)}.
-Distribution: 5 Instagram Reels + 5 TikTok Videos.
+      const platList = vaPlatforms.join(" + ");
+      const userPrompt = `Generate EXACTLY ${vaCount} unique short-form video concepts for ${safe(loadSettings().productName || "our brand", 40)}.
+Platforms: ${platList}.${vaFocus ? "\nToday's focus: " + safe(vaFocus, 200) : ""}
 
 VIRAL MECHANICS TO ADAPT (do not copy - use the patterns for our brand):
 ${insights}
