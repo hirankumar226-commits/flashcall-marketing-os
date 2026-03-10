@@ -116,6 +116,8 @@ const DEFAULTS = {
   geminiApiKey:      "",
   heygenApiKey:      "",   // from app.heygen.com → Settings → API
   heygenVoiceId:     "",   // set via Settings → AI → Browse & Pick a Voice
+  creatifyApiId:     "",   // from app.creatify.ai → Settings → API
+  creatifyApiKey:    "",   // from app.creatify.ai → Settings → API
   // ── Supabase credentials are safe to hardcode (publishable anon key, protected by RLS) ──
   // Team members auto-load all settings (incl. Gemini + HeyGen keys) from Supabase on login.
   supabaseUrl:       "https://aujypjwdzgmlakzwenxo.supabase.co",
@@ -476,6 +478,49 @@ async function heygenGetVideoStatus(videoId, apiKey) {
   return data?.data || {};
 }
 
+/* ════════════════════════════════════════════════════════
+   CREATIFY API — /api/lipsyncs/ (AI Avatar, Aurora model)
+   ════════════════════════════════════════════════════════ */
+function creatifyHeaders(apiId, apiKey) {
+  return { "Content-Type": "application/json", "X-API-ID": apiId, "X-API-KEY": apiKey };
+}
+
+async function creatifyListAvatars(apiId, apiKey) {
+  const res  = await fetch("https://api.creatify.ai/api/personas/", { headers: creatifyHeaders(apiId, apiKey) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || `Creatify avatars HTTP ${res.status}`);
+  return Array.isArray(data) ? data : (data.results || data.data || []);
+}
+
+async function creatifyGenerateVideo(creatorId, script, apiId, apiKey) {
+  const body = {
+    text:         script,
+    creator:      creatorId,
+    aspect_ratio: "9:16",
+    model_version: "aurora_v1_fast",  // best quality fast; switch to aurora_v1 for premium
+  };
+  const res  = await fetch("https://api.creatify.ai/api/lipsyncs/", {
+    method: "POST",
+    headers: creatifyHeaders(apiId, apiKey),
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || data?.detail || `Creatify generate HTTP ${res.status}`);
+  if (!data.id) throw new Error("Creatify did not return a job ID");
+  return data.id;  // lipsync task ID
+}
+
+async function creatifyGetStatus(jobId, apiId, apiKey) {
+  const res  = await fetch(`https://api.creatify.ai/api/lipsyncs/${jobId}/`, {
+    headers: creatifyHeaders(apiId, apiKey),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.message || data?.detail || `Creatify status HTTP ${res.status}`);
+  // data.status: "pending" | "processing" | "done" | "failed"
+  // data.output: video URL when done
+  return data;
+}
+
 async function generateUGCScript(concept, charDesc, settings) {
   // If concept already has scenes, we DON'T need Gemini — the scenes ARE the scripts.
   // This function now returns the scenes array for HeyGen.
@@ -788,6 +833,7 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
   const [open, setOpen]             = useState(false);
   const [showVideoModal, setShowVideoModal] = useState(false);
   const [selectedChar, setSelectedChar]     = useState(null);
+  const [videoProvider, setVideoProvider]   = useState("creatify"); // "creatify" | "heygen"
   const [genVideo, setGenVideo]     = useState(false);
   const [videoMsg, setVideoMsg]     = useState("");
   const [videoErr, setVideoErr]     = useState("");
@@ -828,58 +874,66 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
   }
 
   async function handleGenerateVideo() {
-    const s          = loadSettings();
-    const heygenKey  = s.heygenApiKey?.trim();
-    const geminiKey  = s.geminiApiKey?.trim();
-
-    if (!heygenKey) { setVideoErr("Add your HeyGen API key in ⚙️ Settings → AI first."); return; }
-    const char = selectedChar;
+    const s         = loadSettings();
+    const geminiKey = s.geminiApiKey?.trim();
+    const char      = selectedChar;
     if (!char) { setVideoErr("Select a character first."); return; }
-    if (!char.heygenAvatarId) { setVideoErr("This character has no HeyGen Avatar ID. Edit it and enter the avatar ID from your HeyGen account."); return; }
 
-    setGenVideo(true);
-    setVideoErr("");
-
-    // Use pre-built scenes from concept (multi-cut), or fall back to legacy monologue
+    // ── Build the flat script text from scenes (or legacy fallback) ──────────
+    setGenVideo(true); setVideoErr("");
     let scenes = concept.scenes && concept.scenes.length > 0 ? concept.scenes : null;
     if (!scenes) {
-      if (!geminiKey) { setVideoErr("Add your Gemini API key in ⚙️ Settings → AI (needed for script on legacy concepts)."); setGenVideo(false); return; }
-      setVideoMsg("✍️ Generating UGC script with AI (legacy mode)…");
+      if (!geminiKey) { setVideoErr("Add your Gemini API key in ⚙️ Settings (needed for legacy concepts)."); setGenVideo(false); return; }
+      setVideoMsg("✍️ Generating UGC script with AI…");
       try { scenes = await generateUGCScript(concept, char.desc, s); }
       catch (err) { setVideoErr(err?.message || "Script generation failed."); setGenVideo(false); return; }
     }
+    // Flat script = all scene scripts joined. Used by Creatify (handles timing internally).
+    const flatScript = scenes.map(sc => sc.script).join(" ");
 
-    setVideoMsg(`🎬 Submitting ${scenes.length}-scene video to HeyGen…`);
-
-    try {
-      const voiceId  = s.heygenVoiceId?.trim();
-      if (!voiceId) { throw new Error("No voice selected. Go to Settings → AI → Browse & Pick a Voice."); }
-      const videoId  = await heygenGenerateVideo(char.heygenAvatarId, scenes, voiceId, heygenKey);
-
-      const job = {
-        id:            uid(),
-        provider:      "heygen",
-        heygenVideoId: videoId,
-        operationName: "",
-        conceptId:     concept.id,
-        title:         concept.title,
-        characterId:   char.id,
-        charName:      char.name,
-        status:        "processing",
-        videoUrl:      "",
-        videoFileUri:  "",
-        sceneCount:    scenes.length,
-        createdAt:     new Date().toISOString(),
-        error:         "",
-      };
-      appendVideoJob(job);
-      setVideoJob(job);
-      setVideoMsg(`✓ Submitted! ${scenes.length} scenes rendering on HeyGen (~2–4 min). Check Videos page.`);
-    } catch (err) {
-      setVideoErr(err?.message || "Video generation failed.");
-    } finally {
-      setGenVideo(false);
+    // ── CREATIFY path ─────────────────────────────────────────────────────────
+    if (videoProvider === "creatify") {
+      const apiId  = s.creatifyApiId?.trim();
+      const apiKey = s.creatifyApiKey?.trim();
+      if (!apiId || !apiKey) { setVideoErr("Add your Creatify API ID + Key in ⚙️ Settings → AI."); setGenVideo(false); return; }
+      if (!char.creatifyCreatorId) { setVideoErr("This character has no Creatify Avatar ID. Edit the character and paste the creator ID."); setGenVideo(false); return; }
+      setVideoMsg("🎬 Submitting to Creatify Aurora…");
+      try {
+        const jobId = await creatifyGenerateVideo(char.creatifyCreatorId, flatScript, apiId, apiKey);
+        const job = {
+          id: uid(), provider: "creatify", creatifyJobId: jobId,
+          conceptId: concept.id, title: concept.title,
+          characterId: char.id, charName: char.name,
+          status: "processing", videoUrl: "", videoFileUri: "",
+          sceneCount: scenes.length, createdAt: new Date().toISOString(), error: "",
+        };
+        appendVideoJob(job); setVideoJob(job);
+        setVideoMsg(`✓ Submitted to Creatify! Aurora is rendering (~2–5 min). Check the Videos page.`);
+      } catch (err) { setVideoErr(err?.message || "Creatify generation failed."); }
+      finally { setGenVideo(false); }
+      return;
     }
+
+    // ── HEYGEN path ───────────────────────────────────────────────────────────
+    const heygenKey = s.heygenApiKey?.trim();
+    if (!heygenKey) { setVideoErr("Add your HeyGen API key in ⚙️ Settings → AI first."); setGenVideo(false); return; }
+    if (!char.heygenAvatarId) { setVideoErr("This character has no HeyGen Avatar ID. Edit it in Characters."); setGenVideo(false); return; }
+    const voiceId = s.heygenVoiceId?.trim();
+    if (!voiceId) { setVideoErr("No voice selected. Go to Settings → AI → Browse & Pick a Voice."); setGenVideo(false); return; }
+    setVideoMsg(`🎬 Submitting ${scenes.length}-scene video to HeyGen…`);
+    try {
+      const videoId = await heygenGenerateVideo(char.heygenAvatarId, scenes, voiceId, heygenKey);
+      const job = {
+        id: uid(), provider: "heygen", heygenVideoId: videoId, operationName: "",
+        conceptId: concept.id, title: concept.title,
+        characterId: char.id, charName: char.name,
+        status: "processing", videoUrl: "", videoFileUri: "",
+        sceneCount: scenes.length, createdAt: new Date().toISOString(), error: "",
+      };
+      appendVideoJob(job); setVideoJob(job);
+      setVideoMsg(`✓ Submitted! ${scenes.length} scenes rendering on HeyGen (~2–4 min). Check Videos page.`);
+    } catch (err) { setVideoErr(err?.message || "HeyGen generation failed."); }
+    finally { setGenVideo(false); }
   }
 
   // On modal open, pre-select default character
@@ -1178,26 +1232,48 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
             </div>
 
             {/* Concept info */}
-            <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "10px 14px", marginBottom: 20, fontSize: 12, color: "#92400e" }}>
+            <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#92400e" }}>
               <strong style={{ color: "#fbbf24" }}>{concept.title}</strong><br/>
               Hook: <em style={{ color: "#d97706" }}>"{concept.hook}"</em>
             </div>
 
-            {/* Character selector */}
+            {/* Provider toggle */}
             <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 8 }}>Video Provider</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[
+                  { id: "creatify", label: "🎭 Creatify Aurora", sub: "Full-body UGC-style • Recommended" },
+                  { id: "heygen",   label: "📸 HeyGen",          sub: "Talking head only" },
+                ].map(p => (
+                  <button key={p.id} onClick={() => setVideoProvider(p.id)} style={{
+                    flex: 1, padding: "10px 12px", borderRadius: 10, cursor: "pointer", textAlign: "left",
+                    background: videoProvider === p.id ? "rgba(99,102,241,0.12)" : "#0b1020",
+                    border: `1px solid ${videoProvider === p.id ? "#6366f1" : "#1a2540"}`,
+                  }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: videoProvider === p.id ? "#818cf8" : "#94a3b8" }}>{p.label}</div>
+                    <div style={{ fontSize: 10, color: "#374151", marginTop: 2 }}>{p.sub}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Character selector */}
+            <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 10 }}>
                 Select UGC Character
               </div>
-              <CharacterSelector
-                selected={selectedChar}
-                onSelect={setSelectedChar}
-              />
+              <CharacterSelector selected={selectedChar} onSelect={setSelectedChar} />
             </div>
 
-            {/* API key reminder */}
-            {!loadSettings().geminiApiKey && (
-              <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 11, color: "#f87171" }}>
-                ⚠️ Gemini API key not set. Go to ⚙️ Settings → AI to add it.
+            {/* Character avatar ID check */}
+            {selectedChar && videoProvider === "creatify" && !selectedChar.creatifyCreatorId && (
+              <div style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 12, fontSize: 11, color: "#fbbf24" }}>
+                ⚠️ <strong>{selectedChar.name}</strong> has no Creatify Avatar ID. Edit the character in 👥 Characters and paste the Creator ID from <a href="https://app.creatify.ai" target="_blank" rel="noreferrer" style={{ color: "#f59e0b" }}>app.creatify.ai</a>.
+              </div>
+            )}
+            {selectedChar && videoProvider === "heygen" && !selectedChar.heygenAvatarId && (
+              <div style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 12, fontSize: 11, color: "#fbbf24" }}>
+                ⚠️ <strong>{selectedChar.name}</strong> has no HeyGen Avatar ID. Edit the character in 👥 Characters.
               </div>
             )}
 
@@ -1205,13 +1281,6 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
             {videoMsg && !videoErr && (
               <div style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#10b981" }}>
                 {videoMsg}
-                {videoJob?.videoUrl && (
-                  <div style={{ marginTop: 8 }}>
-                    <a href={videoJob.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#6ee7b7", fontWeight: 700, textDecoration: "underline" }}>
-                      ▶ Watch Video ↗
-                    </a>
-                  </div>
-                )}
               </div>
             )}
             {videoErr && (
@@ -1229,15 +1298,23 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
                   width: "100%",
                   background: genVideo || !selectedChar
                     ? "#111827"
-                    : "linear-gradient(135deg, #f59e0b, #f97316)",
+                    : videoProvider === "creatify"
+                      ? "linear-gradient(135deg, #6366f1, #8b5cf6)"
+                      : "linear-gradient(135deg, #f59e0b, #f97316)",
                   border: "none", borderRadius: 10, padding: "13px",
                   color: genVideo || !selectedChar ? "#374151" : "white",
                   fontSize: 14, fontWeight: 700,
                   cursor: genVideo || !selectedChar ? "not-allowed" : "pointer",
                   display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                  boxShadow: genVideo || !selectedChar ? "none" : "0 4px 20px rgba(245,158,11,.4)",
+                  boxShadow: genVideo || !selectedChar ? "none"
+                    : videoProvider === "creatify" ? "0 4px 20px rgba(99,102,241,.4)"
+                    : "0 4px 20px rgba(245,158,11,.4)",
                 }}>
-                {genVideo ? <><Spinner size={14} /> Submitting to Veo 3.1…</> : "🍌 Generate Realistic UGC Video"}
+                {genVideo
+                  ? <><Spinner size={14} /> Generating…</>
+                  : videoProvider === "creatify"
+                    ? "🎭 Generate with Creatify Aurora"
+                    : "🍌 Generate with HeyGen"}
               </button>
             )}
             {videoJob && (
@@ -3328,11 +3405,44 @@ function SettingsPage() {
 
             {/* ── HeyGen Video Generation ── */}
             <div style={{ height: 1, background: "#0e1830", marginBottom: 22 }}/>
+            {/* ── Creatify Section ─────────────────────────────────── */}
+            <div style={{ background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.2)", borderRadius: 12, padding: "18px 18px", marginBottom: 22 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
+                🎭 Creatify Aurora — Full-Body UGC Video <span style={{ fontSize: 10, background: "rgba(139,92,246,0.15)", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 20, padding: "1px 8px", color: "#c4b5fd" }}>Recommended</span>
+              </div>
+              <p style={{ fontSize: 12, color: "#374151", marginBottom: 14, lineHeight: 1.7 }}>
+                Full-body AI avatars with Aurora model — generates real walking, gesturing UGC-style video, not just a talking head. 1,500+ realistic personas. Get your keys from <strong style={{ color: "#8b5cf6" }}>app.creatify.ai</strong> → Settings → API.
+              </p>
+              <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+                Creatify API ID
+              </label>
+              <input
+                type="password"
+                value={s.creatifyApiId || ""}
+                onChange={e => update("creatifyApiId", e.target.value)}
+                placeholder="Your Creatify API ID"
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace", boxSizing: "border-box", marginBottom: 10 }}
+              />
+              <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+                Creatify API Key
+              </label>
+              <input
+                type="password"
+                value={s.creatifyApiKey || ""}
+                onChange={e => update("creatifyApiKey", e.target.value)}
+                placeholder="Your Creatify API Key"
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace", boxSizing: "border-box", marginBottom: 6 }}
+              />
+              {s.creatifyApiId && s.creatifyApiKey && (
+                <div style={{ fontSize: 11, color: "#10b981", marginTop: 4 }}>✓ Creatify connected</div>
+              )}
+            </div>
+
             <div style={{ fontSize: 14, fontWeight: 700, color: "#6366f1", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
-              🎬 HeyGen — UGC Video Generation
+              📸 HeyGen — Talking Head Fallback
             </div>
             <p style={{ fontSize: 12, color: "#374151", marginBottom: 14, lineHeight: 1.7 }}>
-              Realistic lip-sync avatar videos — the same tech as Arcads. Gemini writes the UGC script, HeyGen renders the video using your avatar.
+              Lip-sync avatar videos. Use if you already have HeyGen avatars set up.
             </p>
             <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
               HeyGen API Key
@@ -3422,12 +3532,11 @@ function SettingsPage() {
             )}
 
             <div style={{ padding: "12px 14px", background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 10, fontSize: 12, color: "#374151", lineHeight: 1.8 }}>
-              <div style={{ fontWeight: 700, color: "#6366f1", marginBottom: 6 }}>✓ How it works</div>
-              <div>1. Add your <strong style={{ color: "#f1f5f9" }}>HeyGen avatars</strong> in Characters page (paste the Avatar ID)</div>
-              <div>2. Generate a concept → click <strong style={{ color: "#f1f5f9" }}>Generate Video</strong></div>
-              <div>3. Gemini writes a <strong style={{ color: "#f1f5f9" }}>60–90 second UGC script</strong> automatically</div>
-              <div>4. HeyGen renders a <strong style={{ color: "#f1f5f9" }}>realistic talking avatar video</strong> in ~2–4 min</div>
-              <div style={{ marginTop: 8, color: "#64748b" }}>Video links expire in 7 days — download to keep permanently.</div>
+              <div style={{ fontWeight: 700, color: "#6366f1", marginBottom: 6 }}>✓ How HeyGen works (fallback)</div>
+              <div>1. Add a <strong style={{ color: "#f1f5f9" }}>HeyGen Avatar ID</strong> to a character</div>
+              <div>2. Generate a concept → click <strong style={{ color: "#f1f5f9" }}>Generate Video</strong> → pick HeyGen provider</div>
+              <div>3. Gemini writes the script · HeyGen renders in ~2–4 min</div>
+              <div style={{ marginTop: 6, color: "#8b5cf6", fontWeight: 600 }}>💡 Use Creatify Aurora above for full-body UGC-style video instead</div>
             </div>
           </div>
         )}
@@ -4225,7 +4334,8 @@ function CharactersPage() {
   const [fDesc, setFDesc]         = useState("");
   const [fBase64, setFBase64]     = useState("");
   const [fIsDefault, setFIsDefault] = useState(false);
-  const [fHeygenId, setFHeygenId]   = useState("");
+  const [fHeygenId, setFHeygenId]           = useState("");
+  const [fCreatifyId, setFCreatifyId]       = useState("");
   const fileInputRef = useRef(null);
 
   function showToast(msg, type = "success") {
@@ -4275,7 +4385,7 @@ function CharactersPage() {
 
   function openAdd() {
     setEditing(null);
-    setFName(""); setFDesc(""); setFBase64(""); setFHeygenId("");
+    setFName(""); setFDesc(""); setFBase64(""); setFHeygenId(""); setFCreatifyId("");
     setFIsDefault(chars.length === 0);
     setShowForm(true);
   }
@@ -4285,6 +4395,7 @@ function CharactersPage() {
     setFName(c.name); setFDesc(c.desc || "");
     setFBase64(c.base64 || "");
     setFHeygenId(c.heygenAvatarId || "");
+    setFCreatifyId(c.creatifyCreatorId || "");
     setFIsDefault(!!c.isDefault);
     setShowForm(true);
   }
@@ -4311,7 +4422,8 @@ function CharactersPage() {
       name:            fName.trim(),
       desc:            fDesc.trim(),
       base64:          fBase64,
-      heygenAvatarId:  fHeygenId.trim(),
+      heygenAvatarId:     fHeygenId.trim(),
+      creatifyCreatorId:  fCreatifyId.trim(),
       isDefault:       fIsDefault,
       createdAt:       editing?.createdAt || new Date().toISOString(),
     };
@@ -4514,10 +4626,29 @@ function CharactersPage() {
           </div>
 
           {/* Default toggle */}
+          {/* Creatify Creator ID */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Creatify Creator ID <span style={{ color: "#6366f1", fontWeight: 400, textTransform: "none" }}>for Aurora full-body UGC video · Recommended</span>
+            </label>
+            <input
+              type="text" value={fCreatifyId} onChange={e => setFCreatifyId(e.target.value)}
+              placeholder="e.g. 18fccce8-86e7-5f31-abc8-18915cb872be"
+              style={{ width: "100%", background: "#080d1e", border: "1px solid #0e1830", borderRadius: 8,
+                padding: "10px 12px", color: "#f1f5f9", fontSize: 13, boxSizing: "border-box" }}
+            />
+            <div style={{ fontSize: 11, color: "#374151", marginTop: 5 }}>
+              Get this from <strong style={{ color: "#6366f1" }}>app.creatify.ai</strong> → AI Avatars → click any avatar → copy the ID from the URL.
+            </div>
+            {fCreatifyId && (
+              <div style={{ fontSize: 11, color: "#10b981", marginTop: 4 }}>✓ Creatify Creator ID set — videos will use Aurora full-body generation</div>
+            )}
+          </div>
+
           {/* HeyGen Avatar ID */}
           <div style={{ marginBottom: 16 }}>
             <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
-              HeyGen Avatar ID <span style={{ color: "#6366f1", fontWeight: 400, textTransform: "none" }}>required for video generation</span>
+              HeyGen Avatar ID <span style={{ color: "#374151", fontWeight: 400, textTransform: "none" }}>optional fallback</span>
             </label>
             <input
               type="text" value={fHeygenId} onChange={e => setFHeygenId(e.target.value)}
@@ -4525,11 +4656,8 @@ function CharactersPage() {
               style={{ width: "100%", background: "#080d1e", border: "1px solid #0e1830", borderRadius: 8,
                 padding: "10px 12px", color: "#f1f5f9", fontSize: 13, boxSizing: "border-box" }}
             />
-            <div style={{ fontSize: 11, color: "#374151", marginTop: 5 }}>
-              Get this from <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Avatars → click any avatar → copy its ID from the URL or details panel.
-            </div>
             {fHeygenId && (
-              <div style={{ fontSize: 11, color: "#10b981", marginTop: 4 }}>✓ Avatar ID set — videos will use HeyGen lip-sync</div>
+              <div style={{ fontSize: 11, color: "#6366f1", marginTop: 4 }}>✓ HeyGen Avatar ID set</div>
             )}
           </div>
 
@@ -4606,13 +4734,18 @@ function CharactersPage() {
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>{c.name}</div>
                 {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 6, lineHeight: 1.55 }}>{c.desc}</div>}
-                {c.heygenAvatarId ? (
-                  <div style={{ fontSize: 10, color: "#10b981", marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
-                    ✓ HeyGen: <span style={{ fontFamily: "monospace", color: "#6366f1" }}>{c.heygenAvatarId.slice(0,24)}…</span>
+                {c.creatifyCreatorId ? (
+                  <div style={{ fontSize: 10, color: "#10b981", marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                    ✓ Creatify: <span style={{ fontFamily: "monospace", color: "#818cf8" }}>{c.creatifyCreatorId.slice(0,20)}…</span>
                   </div>
                 ) : (
-                  <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 8 }}>
-                    ⚠ No HeyGen Avatar ID — edit to add one
+                  <div style={{ fontSize: 10, color: "#f59e0b", marginBottom: 4 }}>
+                    ⚠ No Creatify ID — edit to add one
+                  </div>
+                )}
+                {c.heygenAvatarId && (
+                  <div style={{ fontSize: 10, color: "#6366f1", marginBottom: 8, display: "flex", alignItems: "center", gap: 4 }}>
+                    HeyGen: <span style={{ fontFamily: "monospace" }}>{c.heygenAvatarId.slice(0,20)}…</span>
                   </div>
                 )}
 
@@ -4641,7 +4774,7 @@ function CharactersPage() {
 /* ════════════════════════════════════════════════════════════════════
    VIDEO JOBS PAGE — Track Veo 3.1 background video generation
    ════════════════════════════════════════════════════════════════════ */
-function ElapsedTimer({ createdAt }) {
+function ElapsedTimer({ createdAt, provider }) {
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -4661,20 +4794,22 @@ function ElapsedTimer({ createdAt }) {
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
         <Spinner size={10}/>
-        <span style={{ fontSize: 11, color: "#6366f1" }}>
-          HeyGen rendering… {label} elapsed
+        <span style={{ fontSize: 11, color: provider === "creatify" ? "#8b5cf6" : "#6366f1" }}>
+          {provider === "creatify" ? "🎭 Creatify Aurora" : "📸 HeyGen"} rendering… {label} elapsed
         </span>
       </div>
       <div style={{ height: 4, background: "#0e1830", borderRadius: 4, overflow: "hidden", width: "100%", maxWidth: 320 }}>
         <div style={{
           height: "100%", width: "100%",
-          background: "linear-gradient(90deg, #6366f1, #8b5cf6)",
+          background: provider === "creatify"
+            ? "linear-gradient(90deg, #8b5cf6, #6366f1)"
+            : "linear-gradient(90deg, #6366f1, #8b5cf6)",
           borderRadius: 4,
           animation: "shimmer 1.5s infinite linear",
         }}/>
       </div>
       <div style={{ fontSize: 10, color: "#374151", marginTop: 3 }}>
-        Rendering on HeyGen servers — this page can be closed and reopened
+        Rendering on {provider === "creatify" ? "Creatify's" : "HeyGen's"} servers — this page can be closed and reopened
       </div>
     </div>
   );
@@ -4699,9 +4834,11 @@ function VideoJobsPage() {
   }, []);
 
   async function pollJobs() {
-    const s         = loadSettings();
-    const geminiKey = s.geminiApiKey?.trim();
-    const heygenKey = s.heygenApiKey?.trim();
+    const s            = loadSettings();
+    const geminiKey    = s.geminiApiKey?.trim();
+    const heygenKey    = s.heygenApiKey?.trim();
+    const creatifyId   = s.creatifyApiId?.trim();
+    const creatifyKey  = s.creatifyApiKey?.trim();
 
     const currentJobs = loadVideoJobs();
     const pending = currentJobs.filter(j => j.status === "queued" || j.status === "processing");
@@ -4711,7 +4848,34 @@ function VideoJobsPage() {
     let updated = [...currentJobs];
 
     for (const job of pending) {
-      if (job.provider === "heygen") {
+      // ── Creatify ─────────────────────────────────────────────────────────
+      if (job.provider === "creatify") {
+        if (!creatifyId || !creatifyKey || !job.creatifyJobId) continue;
+        try {
+          const st = await creatifyGetStatus(job.creatifyJobId, creatifyId, creatifyKey);
+          if (st.status === "done" && st.output) {
+            updated = updated.map(j => j.id === job.id
+              ? { ...j, status: "completed", videoUrl: st.output }
+              : j
+            );
+          } else if (st.status === "failed") {
+            const errObj = st.error || st.message || st.detail;
+            const reason = typeof errObj === "object" && errObj !== null
+              ? (errObj.detail || errObj.message || JSON.stringify(errObj))
+              : (errObj || "Creatify did not return a reason.");
+            updated = updated.map(j => j.id === job.id
+              ? { ...j, status: "failed", error: reason }
+              : j
+            );
+          }
+        } catch (e) {
+          updated = updated.map(j => j.id === job.id
+            ? { ...j, status: "failed", error: `Poll error: ${e.message}` }
+            : j
+          );
+        }
+        continue;
+      }
         if (!heygenKey || !job.heygenVideoId) continue;
         try {
           const st = await heygenGetVideoStatus(job.heygenVideoId, heygenKey);
@@ -4886,7 +5050,7 @@ function VideoJobsPage() {
                     {" · "}{new Date(job.createdAt).toLocaleString()}
                   </div>
                   {(job.status === "queued" || job.status === "processing") && (
-                    <ElapsedTimer createdAt={job.createdAt} />
+                    <ElapsedTimer createdAt={job.createdAt} provider={job.provider} />
                   )}
                   {job.status === "completed" && (job.videoUrl || job.videoFileUri) && (
                     <div style={{ marginTop: 6 }}>
