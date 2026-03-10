@@ -68,7 +68,7 @@ const K_VIDEOJOBS  = "fcr_videojobs_v3";   // [{id,operationName,conceptId,title
 const DEFAULTS = {
   geminiApiKey:      "",
   heygenApiKey:      "",   // from app.heygen.com → Settings → API
-  heygenVoiceId:     "2d5b0e6cf36f460aa7fc47e3eee4ba54",  // default: en-US male
+  heygenVoiceId:     "",   // set via Settings → AI → Browse & Pick a Voice
   supabaseUrl:       "",   // https://xxxx.supabase.co
   supabaseAnonKey:   "",   // eyJ... public anon key
   // Video generation uses Gemini key via Veo 3.1 — no separate key needed
@@ -352,17 +352,42 @@ async function heygenListVoices(apiKey) {
   return data?.data?.voices || [];
 }
 
-async function heygenGenerateVideo(avatarId, script, voiceId, apiKey) {
+// Build HeyGen video_inputs from concept scenes (multi-cut influencer style)
+function buildHeygenVideoInputs(avatarId, scenes, voiceId) {
+  // Scene → video_input mappings. Each scene = one hard cut in the final video.
+  // Background colors shift per scene to simulate environment/energy changes.
+  // Avatar scale shifts to simulate close-up vs. mid-shot cuts.
+  return scenes.map(scene => ({
+    character: {
+      type:         "avatar",
+      avatar_id:    avatarId,
+      avatar_style: "normal",
+      // scale: 0.4 (wide) → 1.0 (tight close-up). Default 0.7.
+      scale:        scene.avatarScale  != null ? scene.avatarScale  : 0.7,
+      // offset: {x, y} as fraction of frame, 0 = center.
+      offset:       scene.avatarOffset || { x: 0.0, y: 0.0 },
+    },
+    voice: {
+      type:       "text",
+      input_text: scene.script,
+      voice_id:   voiceId,
+      speed:      scene.voiceSpeed != null ? scene.voiceSpeed : 1.0,
+    },
+    background: scene.backgroundHex
+      ? { type: "color", value: scene.backgroundHex }
+      : { type: "color", value: "#111827" },
+  }));
+}
+
+async function heygenGenerateVideo(avatarId, scenes, voiceId, apiKey) {
+  // scenes: array from concept.scenes — each one becomes a cut in the video
+  const video_inputs = buildHeygenVideoInputs(avatarId, scenes, voiceId);
   const res = await fetch("https://api.heygen.com/v2/video/generate", {
     method: "POST",
     headers: { "X-Api-Key": apiKey, "Content-Type": "application/json" },
     body: JSON.stringify({
-      video_inputs: [{
-        character: { type: "avatar", avatar_id: avatarId, avatar_style: "normal" },
-        voice:     { type: "text",   input_text: script,   voice_id: voiceId },
-      }],
+      video_inputs,
       dimension: { width: 1080, height: 1920 },
-      aspect_ratio: null,
     })
   });
   const data = await res.json();
@@ -384,23 +409,28 @@ async function heygenGetVideoStatus(videoId, apiKey) {
 }
 
 async function generateUGCScript(concept, charDesc, settings) {
-  // Use Gemini to turn a concept into a spoken UGC script for HeyGen
-  const sys = `You are a UGC ad scriptwriter. Write a natural, conversational speaking script for a social media video ad. 
-The script must sound like a real person talking directly to camera — no emojis, no hashtags, no stage directions, no scene descriptions.
-Output ONLY the spoken words, nothing else. 60-90 seconds when spoken at a natural pace (~130 words per minute). So aim for 130-195 words.
+  // If concept already has scenes, we DON'T need Gemini — the scenes ARE the scripts.
+  // This function now returns the scenes array for HeyGen.
+  // If no scenes (legacy concept), fall back to generating a monolithic script as a single scene.
+  if (concept.scenes && concept.scenes.length > 0) {
+    return concept.scenes; // already structured for HeyGen
+  }
+  // Legacy fallback: generate monolithic script and wrap as one scene
+  const sys = `You are a UGC ad scriptwriter. Write a natural, conversational speaking script for a social media video ad.
+The script must sound like a real person talking directly to camera — no emojis, no hashtags, no stage directions.
+Output ONLY the spoken words, nothing else. 60-90 seconds at a natural pace (~130 words per minute).
 Product: ${settings.productName} — ${settings.productTagline}
 ${settings.productDesc}
-Brand voice: ${settings.brandVoice}
-Words to use: ${settings.wordsToUse}
-Words to avoid: ${settings.wordsToAvoid}`;
-  const usr = `Write the spoken script for this video concept:
+Brand voice: ${settings.brandVoice}`;
+  const usr = `Write the spoken script for:
 Title: ${concept.title}
 Hook: ${concept.hook}
-${concept.script ? "Concept script: " + concept.script : ""}
-${charDesc ? "Creator persona: " + charDesc : ""}
+${concept.script ? "Concept script: " + JSON.stringify(concept.script) : ""}
 Target audience: ${settings.targetAudience}
-The script should start with the hook, then naturally explain the product, then end with a clear CTA to visit ${settings.websiteUrl}.`;
-  return callGemini(sys, usr, 1024);
+End with a CTA to visit ${settings.websiteUrl}.`;
+  const monologue = await callGemini(sys, usr, 1024);
+  // Return as a single scene
+  return [{ label: "Full Video", script: monologue, backgroundHex: "#111827", avatarScale: 0.7, voiceSpeed: 1.0 }];
 }
 
 /* ── GEMINI API ───────────────────────────────────────────────────── */
@@ -735,29 +765,34 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
     const geminiKey  = s.geminiApiKey?.trim();
 
     if (!heygenKey) { setVideoErr("Add your HeyGen API key in ⚙️ Settings → AI first."); return; }
-    if (!geminiKey) { setVideoErr("Add your Gemini API key in ⚙️ Settings → AI (needed for script generation)."); return; }
     const char = selectedChar;
     if (!char) { setVideoErr("Select a character first."); return; }
     if (!char.heygenAvatarId) { setVideoErr("This character has no HeyGen Avatar ID. Edit it and enter the avatar ID from your HeyGen account."); return; }
 
     setGenVideo(true);
     setVideoErr("");
-    setVideoMsg("✍️ Generating UGC script with AI…");
+
+    // Use pre-built scenes from concept (multi-cut), or fall back to legacy monologue
+    let scenes = concept.scenes && concept.scenes.length > 0 ? concept.scenes : null;
+    if (!scenes) {
+      if (!geminiKey) { setVideoErr("Add your Gemini API key in ⚙️ Settings → AI (needed for script on legacy concepts)."); setGenVideo(false); return; }
+      setVideoMsg("✍️ Generating UGC script with AI (legacy mode)…");
+      try { scenes = await generateUGCScript(concept, char.desc, s); }
+      catch (err) { setVideoErr(err?.message || "Script generation failed."); setGenVideo(false); return; }
+    }
+
+    setVideoMsg(`🎬 Submitting ${scenes.length}-scene video to HeyGen…`);
 
     try {
-      // 1. Generate spoken script via Gemini
-      const script = await generateUGCScript(concept, char.desc, s);
-      setVideoMsg("🎬 Submitting to HeyGen…");
-
-      // 2. Submit to HeyGen
-      const voiceId  = s.heygenVoiceId?.trim() || "2d5b0e6cf36f460aa7fc47e3eee4ba54";
-      const videoId  = await heygenGenerateVideo(char.heygenAvatarId, script, voiceId, heygenKey);
+      const voiceId  = s.heygenVoiceId?.trim();
+      if (!voiceId) { throw new Error("No voice selected. Go to Settings → AI → Browse & Pick a Voice."); }
+      const videoId  = await heygenGenerateVideo(char.heygenAvatarId, scenes, voiceId, heygenKey);
 
       const job = {
         id:            uid(),
         provider:      "heygen",
         heygenVideoId: videoId,
-        operationName: "",        // kept for Veo backward compat
+        operationName: "",
         conceptId:     concept.id,
         title:         concept.title,
         characterId:   char.id,
@@ -765,13 +800,13 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
         status:        "processing",
         videoUrl:      "",
         videoFileUri:  "",
-        script,
+        sceneCount:    scenes.length,
         createdAt:     new Date().toISOString(),
         error:         "",
       };
       appendVideoJob(job);
       setVideoJob(job);
-      setVideoMsg("✓ Submitted to HeyGen! Generating in background (~2–4 min). Check Videos page.");
+      setVideoMsg(`✓ Submitted! ${scenes.length} scenes rendering on HeyGen (~2–4 min). Check Videos page.`);
     } catch (err) {
       setVideoErr(err?.message || "Video generation failed.");
     } finally {
@@ -853,6 +888,72 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
               <div style={{ fontSize: 10, fontWeight: 700, color: "#8b5cf6", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 5 }}>📺 ON-SCREEN TEXT</div>
               <div style={{ fontSize: 16, fontWeight: 800, color: "#e2e8f0", background: "#000", borderRadius: 7, padding: "8px 14px", textAlign: "center" }}>
                 {concept.hookOnScreen}
+              </div>
+            </div>
+          )}
+
+          {/* ── SCENE TIMELINE (HeyGen cuts preview) ── */}
+          {concept.scenes && concept.scenes.length > 0 && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#6366f1", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                🎬 VIDEO CUTS TIMELINE
+                <span style={{ fontSize: 9, color: "#374151", fontWeight: 400, textTransform: "none" }}>
+                  — {concept.scenes.length} scenes → HeyGen renders as hard cuts
+                </span>
+              </div>
+              {/* Timeline bar */}
+              <div style={{ display: "flex", gap: 3, marginBottom: 12, borderRadius: 8, overflow: "hidden" }}>
+                {concept.scenes.map((sc, si) => (
+                  <div key={si} style={{
+                    flex: 1, height: 6,
+                    background: sc.backgroundHex || "#1a2540",
+                    borderRadius: si === 0 ? "4px 0 0 4px" : si === concept.scenes.length - 1 ? "0 4px 4px 0" : 0,
+                    opacity: 0.85,
+                  }}/>
+                ))}
+              </div>
+              {/* Scene cards */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {concept.scenes.map((sc, si) => (
+                  <div key={si} style={{
+                    background: `${sc.backgroundHex || "#111827"}cc`,
+                    border: `1px solid ${sc.backgroundHex || "#1a2540"}88`,
+                    borderRadius: 9, padding: "10px 12px",
+                    display: "flex", gap: 10, alignItems: "flex-start",
+                  }}>
+                    {/* Scene number + label */}
+                    <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 3, minWidth: 44 }}>
+                      <div style={{
+                        width: 24, height: 24, borderRadius: 6,
+                        background: "rgba(99,102,241,0.2)", border: "1px solid rgba(99,102,241,0.3)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        fontSize: 11, fontWeight: 800, color: "#818cf8",
+                      }}>
+                        {si + 1}
+                      </div>
+                      <div style={{ fontSize: 8, color: "#475569", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.5px", textAlign: "center", lineHeight: 1.2 }}>
+                        {sc.label || "Scene"}
+                      </div>
+                    </div>
+                    {/* Scene content */}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: "#cbd5e1", lineHeight: 1.7, fontFamily: "'DM Mono', monospace", marginBottom: 5 }}>
+                        {sc.script}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 9, color: "#6366f1", background: "rgba(99,102,241,0.1)", borderRadius: 4, padding: "1px 6px" }}>
+                          Scale {sc.avatarScale?.toFixed(2) || "0.70"}
+                        </span>
+                        <span style={{ fontSize: 9, color: "#10b981", background: "rgba(16,185,129,0.1)", borderRadius: 4, padding: "1px 6px" }}>
+                          Speed {sc.voiceSpeed?.toFixed(2) || "1.00"}x
+                        </span>
+                        {sc.visualNote && (
+                          <span style={{ fontSize: 9, color: "#94a3b8", fontStyle: "italic" }}>{sc.visualNote}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -1912,6 +2013,28 @@ MUSIC DIRECTION (hyper-specific):
 - references: name 2-3 real songs or artists as sonic references
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SCENE STRUCTURE — CRITICAL (this is how HeyGen cuts the video):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Each concept MUST have a "scenes" array of 4–5 scenes. Each scene = one hard cut in the final video.
+HeyGen renders them sequentially — background color + avatar scale changes CREATE the visual cuts.
+Think: how a real influencer jump-cuts their TikTok. Scene 1 is close-up high energy, Scene 2 zooms out and slows down, etc.
+
+SCENE FIELDS:
+- label: "Hook" | "Problem" | "Insight" | "Solution" | "CTA"
+- script: spoken words ONLY for this scene (20–50 words). Natural speech. No stage directions.
+- backgroundHex: dark hex color (#0a0a14 dark navy, #0f172a slate dark, #1a0a2e deep purple, #0a1a0f dark green, #1a0a0a dark red)
+- avatarScale: 0.5 (wide shot) to 0.9 (tight close-up). Hook & CTA = 0.85+. Body = 0.65.
+- voiceSpeed: 0.9 (slow/serious) to 1.15 (fast/energetic). Hook = 1.1. CTA = 1.05.
+- visualNote: 1 sentence — what emotional shift this scene creates for the viewer.
+
+SCENE SEQUENCE PATTERN (for real influencer feel):
+Scene 1 Hook:     close-up (0.85), fast (1.1), dark/intense background → GRAB attention
+Scene 2 Problem:  mid-shot (0.65), slower (0.95), warmer background → EMPATHIZE  
+Scene 3 Insight:  slight close-up (0.75), confident (1.0), contrasting background → AHA moment
+Scene 4 Solution: mid-shot (0.7), natural (1.0), clean background → EXPLAIN naturally
+Scene 5 CTA:      tight close-up (0.88), direct (1.05), original/bold background → CONVERT
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fences, no extra text.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [
@@ -1927,6 +2050,48 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
       "body": "full 3–45s script with [visual direction cues] throughout",
       "cta": "full 45–60s CTA script"
     },
+    "scenes": [
+      {
+        "label": "Hook",
+        "script": "Spoken words only for this scene. 20-35 words. Intense hook line.",
+        "backgroundHex": "#0a0a14",
+        "avatarScale": 0.85,
+        "voiceSpeed": 1.1,
+        "visualNote": "Intense close-up eye contact. Viewer feels called out."
+      },
+      {
+        "label": "Problem",
+        "script": "Spoken words for the problem/empathy beat. 30-50 words.",
+        "backgroundHex": "#0f172a",
+        "avatarScale": 0.65,
+        "voiceSpeed": 0.95,
+        "visualNote": "Mid-shot, slower pace. Viewer feels understood."
+      },
+      {
+        "label": "Insight",
+        "script": "The surprising truth or reframe. 30-45 words.",
+        "backgroundHex": "#1a0a2e",
+        "avatarScale": 0.75,
+        "voiceSpeed": 1.0,
+        "visualNote": "Slight lean-in. Viewer gets the aha moment."
+      },
+      {
+        "label": "Solution",
+        "script": "How Flashcall.me solves it — organic, not salesy. 30-45 words.",
+        "backgroundHex": "#0a1118",
+        "avatarScale": 0.7,
+        "voiceSpeed": 1.0,
+        "visualNote": "Relaxed mid-shot. Natural product mention."
+      },
+      {
+        "label": "CTA",
+        "script": "Direct 1-sentence CTA. 15-25 words. To-camera.",
+        "backgroundHex": "#0a0a14",
+        "avatarScale": 0.88,
+        "voiceSpeed": 1.05,
+        "visualNote": "Tight close-up. Viewer clicks."
+      }
+    ],
     "ugcDirection": {
       "characterSetup": "outfit, background, lighting, props",
       "openingAction": "exact physical action in first 3 seconds",
@@ -1974,6 +2139,17 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
             body: c.script?.body            || "",
             cta:  c.script?.cta             || "",
           },
+          // Multi-scene array for HeyGen — each item = one hard cut
+          scenes: Array.isArray(c.scenes) && c.scenes.length > 0
+            ? c.scenes.map(sc => ({
+                label:         sc.label         || "Scene",
+                script:        sc.script        || "",
+                backgroundHex: sc.backgroundHex || "#111827",
+                avatarScale:   typeof sc.avatarScale  === "number" ? sc.avatarScale  : 0.7,
+                voiceSpeed:    typeof sc.voiceSpeed   === "number" ? sc.voiceSpeed   : 1.0,
+                visualNote:    sc.visualNote    || "",
+              }))
+            : null,
           ugcDirection: {
             characterSetup:       c.ugcDirection?.characterSetup       || "",
             openingAction:        c.ugcDirection?.openingAction        || "",
@@ -2883,7 +3059,23 @@ function SettingsPage() {
   const [saved, setSaved]       = useState(false);
   const [testing, setTesting]   = useState(false);
   const [testResult, setTestResult] = useState(null);
-  const [showKey, setShowKey]   = useState(false);
+  const [showKey, setShowKey]       = useState(false);
+  const [voices, setVoices]         = useState([]);
+  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [voiceSearch, setVoiceSearch]   = useState("");
+
+  async function fetchVoices() {
+    const key = s.heygenApiKey?.trim();
+    if (!key) { alert("Add your HeyGen API key first, then Save Settings."); return; }
+    setVoiceLoading(true);
+    try {
+      const res  = await fetch("https://api.heygen.com/v2/voices", { headers: { "X-Api-Key": key } });
+      const data = await res.json();
+      const list = (data?.data?.voices || []).sort((a, b) => (a.display_name || a.voice_id).localeCompare(b.display_name || b.voice_id));
+      setVoices(list);
+    } catch (e) { alert("Failed to fetch voices: " + e.message); }
+    finally { setVoiceLoading(false); }
+  }
   const [showPw, setShowPw]     = useState(false);
   const [sbTesting, setSbTesting] = useState(false);
   const [sbResult, setSbResult]   = useState(null);
@@ -3096,25 +3288,70 @@ function SettingsPage() {
               Get it at <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Settings → API → Generate API Key
             </div>
 
-            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
-              Default Voice ID
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Default Voice
             </label>
-            <input
-              type="text"
-              value={s.heygenVoiceId || ""}
-              onChange={e => update("heygenVoiceId", e.target.value)}
-              placeholder="2d5b0e6cf36f460aa7fc47e3eee4ba54"
-              style={{
-                width: "100%", background: "#060912",
-                border: "1px solid #111827", borderRadius: 8,
-                padding: "9px 12px",
-                color: "#f1f5f9", fontSize: 13,
-                fontFamily: "'DM Mono', monospace", boxSizing: "border-box", marginBottom: 8,
-              }}
-            />
-            <div style={{ fontSize: 11, color: "#374151", marginBottom: 20 }}>
-              Browse voices at <strong style={{ color: "#6366f1" }}>app.heygen.com</strong> → Voices → click a voice → copy its ID. Default is a US English male voice.
-            </div>
+
+            {/* Current voice display */}
+            {s.heygenVoiceId && (
+              <div style={{ background: "#060912", border: "1px solid #6366f1", borderRadius: 8, padding: "9px 12px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#f1f5f9" }}>
+                    {voices.find(v => v.voice_id === s.heygenVoiceId)?.display_name || "Selected Voice"}
+                  </div>
+                  <div style={{ fontSize: 10, color: "#374151", fontFamily: "monospace", marginTop: 2 }}>{s.heygenVoiceId}</div>
+                </div>
+                <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700 }}>✓ Selected</span>
+              </div>
+            )}
+
+            {/* Load voices button */}
+            {voices.length === 0 ? (
+              <button onClick={fetchVoices} disabled={voiceLoading}
+                style={{ background: voiceLoading ? "#0b1020" : "rgba(99,102,241,0.15)", border: "1px solid rgba(99,102,241,0.35)", borderRadius: 8, padding: "9px 16px", color: voiceLoading ? "#374151" : "#6366f1", fontSize: 12, fontWeight: 700, cursor: voiceLoading ? "not-allowed" : "pointer", display: "flex", alignItems: "center", gap: 7, marginBottom: 20 }}>
+                {voiceLoading ? <><Spinner size={12}/> Loading voices…</> : "🎙 Browse & Pick a Voice"}
+              </button>
+            ) : (
+              <div style={{ marginBottom: 20 }}>
+                {/* Search */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                  <input type="text" value={voiceSearch} onChange={e => setVoiceSearch(e.target.value)}
+                    placeholder="Search by name or language…"
+                    style={{ flex: 1, background: "#060912", border: "1px solid #111827", borderRadius: 7, padding: "7px 10px", color: "#f1f5f9", fontSize: 12, boxSizing: "border-box" }}
+                  />
+                  <button onClick={fetchVoices} disabled={voiceLoading}
+                    style={{ background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "7px 12px", color: "#64748b", fontSize: 11, cursor: "pointer" }}>
+                    ↺ Refresh
+                  </button>
+                </div>
+                {/* Voice list */}
+                <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #0e1830", borderRadius: 8 }}>
+                  {voices
+                    .filter(v => !voiceSearch || (v.display_name || v.voice_id).toLowerCase().includes(voiceSearch.toLowerCase()) || (v.language || "").toLowerCase().includes(voiceSearch.toLowerCase()))
+                    .map(v => (
+                      <div key={v.voice_id}
+                        onClick={() => update("heygenVoiceId", v.voice_id)}
+                        style={{
+                          padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #0a0d1c",
+                          background: s.heygenVoiceId === v.voice_id ? "rgba(99,102,241,0.15)" : "transparent",
+                          display: "flex", justifyContent: "space-between", alignItems: "center",
+                        }}>
+                        <div>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: s.heygenVoiceId === v.voice_id ? "#6366f1" : "#f1f5f9" }}>
+                            {v.display_name || v.voice_id}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#374151", marginTop: 1 }}>
+                            {[v.language, v.gender, v.age, v.accent].filter(Boolean).join(" · ")}
+                          </div>
+                        </div>
+                        {s.heygenVoiceId === v.voice_id && <span style={{ fontSize: 11, color: "#6366f1", fontWeight: 700 }}>✓</span>}
+                      </div>
+                    ))
+                  }
+                </div>
+                <div style={{ fontSize: 10, color: "#374151", marginTop: 6 }}>{voices.length} voices available · click any to select</div>
+              </div>
+            )}
 
             <div style={{ padding: "12px 14px", background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 10, fontSize: 12, color: "#374151", lineHeight: 1.8 }}>
               <div style={{ fontWeight: 700, color: "#6366f1", marginBottom: 6 }}>✓ How it works</div>
@@ -3910,7 +4147,10 @@ function CharactersPage() {
   const [showForm, setShowForm]   = useState(false);
   const [editing, setEditing]     = useState(null);
   const [toast, setToast]         = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const [uploading, setUploading]   = useState(false);
+  const [importing, setImporting]   = useState(false);
+  const [importList, setImportList] = useState(null); // [{avatar_id, avatar_name, gender, ...}]
+  const [importErr, setImportErr]   = useState("");
 
   // Form fields
   const [fName, setFName]         = useState("");
@@ -3923,6 +4163,46 @@ function CharactersPage() {
   function showToast(msg, type = "success") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
+  }
+
+  async function fetchHeyGenAvatars() {
+    const key = loadSettings().heygenApiKey?.trim();
+    if (!key) { setImportErr("Add your HeyGen API key in Settings → AI first."); return; }
+    setImporting(true);
+    setImportErr("");
+    setImportList(null);
+    try {
+      const res  = await fetch("https://api.heygen.com/v2/avatars", { headers: { "X-Api-Key": key } });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.message || "HeyGen API error " + res.status);
+      const avatars = data?.data?.avatars || [];
+      if (avatars.length === 0) { setImportErr("No avatars found in your HeyGen account."); }
+      else setImportList(avatars);
+    } catch (e) {
+      setImportErr(e.message || "Failed to fetch avatars.");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function importAvatar(av) {
+    // Check if already exists
+    const existing = chars.find(c => c.heygenAvatarId === av.avatar_id);
+    if (existing) { showToast("Avatar already in your characters.", "error"); return; }
+    const newChar = {
+      id:             uid(),
+      name:           av.avatar_name || av.avatar_id,
+      desc:           [av.gender, av.age_range, av.ethnicity, av.style].filter(Boolean).join(", "),
+      base64:         av.preview_image_url || "",  // URL not base64, handled in card display
+      previewUrl:     av.preview_image_url || "",
+      heygenAvatarId: av.avatar_id,
+      isDefault:      chars.length === 0,
+      createdAt:      new Date().toISOString(),
+    };
+    const updated = [...chars, newChar];
+    saveCharacters(updated);
+    setChars(updated);
+    showToast("✓ " + newChar.name + " imported!");
   }
 
   function openAdd() {
@@ -4007,21 +4287,102 @@ function CharactersPage() {
             UGC Characters
           </h1>
           <p style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-            Upload a photo — it's sent directly to Veo 3.1 as base64. No hosting required.
+            Add characters manually or import directly from your HeyGen account.
           </p>
         </div>
-        <button
-          onClick={openAdd}
-          style={{
-            background: "linear-gradient(135deg,#f59e0b,#f97316)",
-            border: "none", borderRadius: 10, padding: "10px 20px",
-            color: "white", fontSize: 13, fontWeight: 700,
-            cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
-            boxShadow: "0 4px 16px rgba(245,158,11,.35)",
-          }}>
-          + Add Character
-        </button>
+        <div style={{ display: "flex", gap: 10, flexShrink: 0 }}>
+          <button
+            onClick={fetchHeyGenAvatars}
+            disabled={importing}
+            style={{
+              background: importing ? "#0b1020" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+              border: "1px solid rgba(99,102,241,0.4)", borderRadius: 10, padding: "10px 18px",
+              color: importing ? "#374151" : "white", fontSize: 13, fontWeight: 700,
+              cursor: importing ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+              display: "flex", alignItems: "center", gap: 7,
+              boxShadow: importing ? "none" : "0 4px 16px rgba(99,102,241,.3)",
+            }}>
+            {importing ? <><Spinner size={13}/> Fetching…</> : "⬇ Import from HeyGen"}
+          </button>
+          <button
+            onClick={openAdd}
+            style={{
+              background: "linear-gradient(135deg,#f59e0b,#f97316)",
+              border: "none", borderRadius: 10, padding: "10px 18px",
+              color: "white", fontSize: 13, fontWeight: 700,
+              cursor: "pointer", whiteSpace: "nowrap",
+              boxShadow: "0 4px 16px rgba(245,158,11,.35)",
+            }}>
+            + Add Manually
+          </button>
+        </div>
       </div>
+
+      {/* Import Error */}
+      {importErr && (
+        <div style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 10, padding: "12px 16px", marginBottom: 16, fontSize: 12, color: "#ef4444" }}>
+          ✗ {importErr}
+        </div>
+      )}
+
+      {/* HeyGen Import Results */}
+      {importList && importList.length > 0 && (
+        <div style={{
+          background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.25)",
+          borderRadius: 14, padding: 20, marginBottom: 24, animation: "fadeUp 0.2s ease",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#6366f1" }}>🎬 Your HeyGen Avatars ({importList.length})</div>
+              <div style={{ fontSize: 11, color: "#374151", marginTop: 2 }}>Click + to import any avatar as a character</div>
+            </div>
+            <button onClick={() => { setImportList(null); setImportErr(""); }}
+              style={{ background: "none", border: "none", color: "#374151", cursor: "pointer", fontSize: 18 }}>×</button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 12 }}>
+            {importList.map(av => {
+              const alreadyAdded = chars.some(c => c.heygenAvatarId === av.avatar_id);
+              return (
+                <div key={av.avatar_id} style={{
+                  background: "#080c1c", border: alreadyAdded ? "1px solid #10b981" : "1px solid #0e1830",
+                  borderRadius: 10, overflow: "hidden", position: "relative",
+                }}>
+                  {/* Preview image */}
+                  <div style={{ height: 120, background: "#040810", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+                    {av.preview_image_url ? (
+                      <img src={av.preview_image_url} alt={av.avatar_name}
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                    ) : (
+                      <span style={{ fontSize: 40, opacity: 0.3 }}>👤</span>
+                    )}
+                  </div>
+                  <div style={{ padding: "10px 12px" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#f1f5f9", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {av.avatar_name || av.avatar_id}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#374151", marginBottom: 8 }}>
+                      {[av.gender, av.style].filter(Boolean).join(" · ") || av.avatar_id.slice(0,20)}
+                    </div>
+                    {alreadyAdded ? (
+                      <div style={{ fontSize: 10, color: "#10b981", fontWeight: 600 }}>✓ Already added</div>
+                    ) : (
+                      <button
+                        onClick={() => importAvatar(av)}
+                        style={{
+                          width: "100%", background: "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                          border: "none", borderRadius: 6, padding: "6px 0",
+                          color: "white", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                        }}>
+                        + Import
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Add/Edit Form */}
       {showForm && (
@@ -4160,8 +4521,8 @@ function CharactersPage() {
             }}>
               {/* Photo */}
               <div style={{ height: 160, background: "#0a0d1c", position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {c.base64 ? (
-                  <img src={c.base64} alt={c.name} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+                {(c.base64 || c.previewUrl) ? (
+                  <img src={c.base64 || c.previewUrl} alt={c.name} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
                 ) : (
                   <span style={{ fontSize: 52, opacity: 0.3 }}>👤</span>
                 )}
