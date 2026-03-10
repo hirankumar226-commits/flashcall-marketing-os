@@ -3417,7 +3417,25 @@ function SettingsPage() {
               )}
             </div>
 
-            {/* ── Creatify Section ─────────────────────────────────── */}
+            <div style={{ background: "#08090f", border: "1px solid #0c1428", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                <span style={{ fontSize:16 }}>⬡</span>
+                <label style={{ fontSize: 11, color: "#374151", display: "block", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, margin:0 }}>OpenAI API Key</label>
+                <span style={{ fontSize:10, background:"rgba(16,185,129,0.1)", border:"1px solid rgba(16,185,129,0.2)", borderRadius:100, padding:"2px 8px", color:"#10b981", marginLeft:"auto" }}>GPT-4o</span>
+              </div>
+              <input
+                type={showKey ? "text" : "password"}
+                value={s.openaiApiKey || ""}
+                onChange={e => update("openaiApiKey", e.target.value)}
+                placeholder="sk-..."
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, outline: "none", fontFamily: "'DM Mono', monospace", boxSizing: "border-box" }}
+              />
+              <p style={{ color: "#1e2d4a", fontSize: 11, margin: "6px 0 0", lineHeight: 1.5 }}>
+                platform.openai.com → API keys. Used for GPT-4o in Generate &amp; Ad Studio.
+              </p>
+            </div>
+
+                        {/* ── Creatify Section ─────────────────────────────────── */}
             <div style={{ background: "rgba(139,92,246,0.05)", border: "1px solid rgba(139,92,246,0.2)", borderRadius: 12, padding: "18px 18px", marginBottom: 22 }}>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#8b5cf6", marginBottom: 4, display: "flex", alignItems: "center", gap: 8 }}>
                 🎭 Creatify Aurora — Full-Body UGC Video <span style={{ fontSize: 10, background: "rgba(139,92,246,0.15)", border: "1px solid rgba(139,92,246,0.3)", borderRadius: 20, padding: "1px 8px", color: "#c4b5fd" }}>Recommended</span>
@@ -4177,24 +4195,6 @@ HOOK STYLES:
               </div>
             </>
           )}
-
-          <div style={{ background: "#08090f", border: "1px solid #0c1428", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
-            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
-              <span style={{ fontSize:16 }}>⬡</span>
-              <label style={{ fontSize: 11, color: "#374151", display: "block", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, margin:0 }}>OpenAI API Key</label>
-              <span style={{ fontSize:10, background:"rgba(16,185,129,0.1)", border:"1px solid rgba(16,185,129,0.2)", borderRadius:100, padding:"2px 8px", color:"#10b981", marginLeft:"auto" }}>GPT-4o</span>
-            </div>
-            <input
-              type={showKey ? "text" : "password"}
-              value={s.openaiApiKey || ""}
-              onChange={e => update("openaiApiKey", e.target.value)}
-              placeholder="sk-..."
-              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, outline: "none", fontFamily: "'DM Mono', monospace", boxSizing: "border-box" }}
-            />
-            <p style={{ color: "#1e2d4a", fontSize: 11, margin: "6px 0 0", lineHeight: 1.5 }}>
-              platform.openai.com → API keys. Used for GPT-4o in Generate &amp; Ad Studio.
-            </p>
-          </div>
 
           {/* Preview concept display */}
           {preview && (
