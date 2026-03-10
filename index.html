@@ -203,7 +203,17 @@ function getDefaultCharacter() {
 }
 
 /* ── VIDEO JOB HELPERS ────────────────────────────────────────────── */
-function loadVideoJobs() { return lsGet(K_VIDEOJOBS, []); }
+function loadVideoJobs() {
+  const jobs = lsGet(K_VIDEOJOBS, []);
+  // Normalize: HeyGen sometimes returns error as an object {code, message, detail}
+  // React can't render objects as children, so we always coerce to string here
+  return jobs.map(j => {
+    if (j.error && typeof j.error === "object") {
+      return { ...j, error: j.error.detail || j.error.message || JSON.stringify(j.error) };
+    }
+    return j;
+  });
+}
 function saveVideoJobs(jobs) { lsSet(K_VIDEOJOBS, jobs); sbPush("videojobs", jobs); }
 function appendVideoJob(job) {
   const prev = loadVideoJobs();
@@ -4711,8 +4721,11 @@ function VideoJobsPage() {
               : j
             );
           } else if (st.status === "failed") {
-            // Capture every available error field HeyGen may return
-            const reason = st.error || st.error_detail || st.message || st.msg || "HeyGen did not provide a reason.";
+            // HeyGen returns error as an object {code, message, detail} or a plain string
+            const errObj = st.error || st.error_detail || st.message || st.msg;
+            const reason = typeof errObj === "object" && errObj !== null
+              ? (errObj.detail || errObj.message || JSON.stringify(errObj))
+              : (errObj || "HeyGen did not provide a reason.");
             updated = updated.map(j => j.id === job.id
               ? { ...j, status: "failed", error: reason }
               : j
@@ -4945,10 +4958,19 @@ function VideoJobsPage() {
                         fontSize: 11, color: "#fca5a5", lineHeight: 1.6,
                         fontFamily: "'DM Mono', monospace", wordBreak: "break-word",
                       }}>
-                        {job.error || "HeyGen did not return a reason. Try refreshing status or resubmitting."}
+                        {(() => {
+                          const e = job.error;
+                          if (!e) return "HeyGen did not return a reason.";
+                          if (typeof e === "string") return e;
+                          return e.detail || e.message || JSON.stringify(e);
+                        })()}
                       </div>
                       <button
-                        onClick={() => navigator.clipboard?.writeText(job.error || "").catch(() => {})}
+                        onClick={() => {
+                          const e = job.error;
+                          const txt = !e ? "" : typeof e === "string" ? e : (e.detail || e.message || JSON.stringify(e));
+                          navigator.clipboard?.writeText(txt);
+                        }}
                         style={{
                           marginTop: 6, background: "rgba(239,68,68,0.1)",
                           border: "1px solid rgba(239,68,68,0.2)", borderRadius: 5,
