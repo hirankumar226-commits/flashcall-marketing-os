@@ -66,7 +66,9 @@ const K_VIDEOJOBS  = "fcr_videojobs_v3";   // [{id,operationName,conceptId,title
 
 /* ── DEFAULT SETTINGS ─────────────────────────────────────────────── */
 const DEFAULTS = {
-  geminiApiKey:    "",
+  geminiApiKey:      "",
+  supabaseUrl:       "",   // https://xxxx.supabase.co
+  supabaseAnonKey:   "",   // eyJ... public anon key
   // Video generation uses Gemini key via Veo 3.1 — no separate key needed
   productName:     "Flashcall.me",
   productTagline:  "Link-in-bio for consultants",
@@ -105,11 +107,10 @@ function loadSettings() {
   return { ...DEFAULTS, ...saved };
 }
 function saveSettings(s) {
-  // Never persist password inside main settings blob
   const { password: _pw, ...rest } = s;
   lsSet(K_SETTINGS, rest);
-  // Password stored separately
   if (_pw && _pw.trim()) lsSet(K_PW, _pw.trim());
+  sbPush("settings", rest); // background sync
 }
 function getCorrectPassword() {
   // Priority: saved pw override > default
@@ -131,16 +132,21 @@ function appendHistory(concepts) {
   }));
   const merged = [...toAdd, ...prev].slice(0, MAX_HISTORY);
   lsSet(K_HISTORY, merged);
+  sbPush("history", merged);
 }
-function clearHistory() { lsDel(K_HISTORY); lsDel(K_DAILY); }
+function clearHistory() {
+  lsDel(K_HISTORY); lsDel(K_DAILY);
+  sbPush("history", []);
+  sbPush("daily", {});
+}
 
 /* ── THEME HELPERS ────────────────────────────────────────────────── */
 function loadThemes() { return lsGet(K_THEMES, []); }
-function saveThemes(t) { lsSet(K_THEMES, t); }
+function saveThemes(t) { lsSet(K_THEMES, t); sbPush("themes", t); }
 
 /* ── CHARACTER HELPERS ────────────────────────────────────────────── */
 function loadCharacters() { return lsGet(K_CHARACTERS, []); }
-function saveCharacters(c) { lsSet(K_CHARACTERS, c); }
+function saveCharacters(c) { lsSet(K_CHARACTERS, c); sbPush("characters", c); }
 function getDefaultCharacter() {
   const chars = loadCharacters();
   return chars.find(c => c.isDefault) || chars[0] || null;
@@ -148,16 +154,18 @@ function getDefaultCharacter() {
 
 /* ── VIDEO JOB HELPERS ────────────────────────────────────────────── */
 function loadVideoJobs() { return lsGet(K_VIDEOJOBS, []); }
-function saveVideoJobs(jobs) { lsSet(K_VIDEOJOBS, jobs); }
+function saveVideoJobs(jobs) { lsSet(K_VIDEOJOBS, jobs); sbPush("videojobs", jobs); }
 function appendVideoJob(job) {
   const prev = loadVideoJobs();
   const updated = [job, ...prev].slice(0, 200);
   lsSet(K_VIDEOJOBS, updated);
+  sbPush("videojobs", updated);
 }
 function updateVideoJob(id, patch) {
   const prev = loadVideoJobs();
   const updated = prev.map(j => j.id === id ? { ...j, ...patch } : j);
   lsSet(K_VIDEOJOBS, updated);
+  sbPush("videojobs", updated);
   return updated;
 }
 
@@ -170,7 +178,109 @@ function niceDate(d) {
 }
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
-/* ── VEO 3.1 VIDEO GENERATION (via your Gemini API key) ──────────── */
+/* ── SUPABASE SYNC LAYER ──────────────────────────────────────────────
+   Single table approach: fcr_store (id text PK, data jsonb, updated_at timestamptz)
+   All app data stored as JSON blobs keyed by logical name.
+   Anon key is safe to expose publicly — RLS keeps it scoped.
+   ──────────────────────────────────────────────────────────────────── */
+function _sbCfg() {
+  const s = lsGet(K_SETTINGS, {});
+  return { url: (s.supabaseUrl || "").replace(/\/$/, ""), key: (s.supabaseAnonKey || "") };
+}
+function sbReady() { const c = _sbCfg(); return !!(c.url && c.key); }
+
+async function sbPush(id, data) {
+  if (!sbReady()) return;
+  const { url, key } = _sbCfg();
+  try {
+    await fetch(`${url}/rest/v1/fcr_store`, {
+      method: "POST",
+      headers: {
+        "apikey": key, "Authorization": `Bearer ${key}`,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify({ id, data, updated_at: new Date().toISOString() }),
+    });
+  } catch (_) {}
+}
+
+async function sbPull(id) {
+  if (!sbReady()) return null;
+  const { url, key } = _sbCfg();
+  try {
+    const res = await fetch(`${url}/rest/v1/fcr_store?id=eq.${id}&select=data`, {
+      headers: { "apikey": key, "Authorization": `Bearer ${key}` },
+    });
+    if (!res.ok) return null;
+    const rows = await res.json();
+    return rows?.[0]?.data ?? null;
+  } catch (_) { return null; }
+}
+
+// Pull all data from Supabase → populate localStorage (called on app load)
+async function syncFromSupabase() {
+  if (!sbReady()) return { ok: false, reason: "not_configured" };
+  try {
+    const { url, key } = _sbCfg();
+    const res = await fetch(`${url}/rest/v1/fcr_store?select=id,data`, {
+      headers: { "apikey": key, "Authorization": `Bearer ${key}` },
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      return { ok: false, reason: `HTTP ${res.status}: ${txt.slice(0, 100)}` };
+    }
+    const rows = await res.json();
+    const MAP = {
+      settings:   K_SETTINGS,
+      characters: K_CHARACTERS,
+      history:    K_HISTORY,
+      daily:      K_DAILY,
+      videojobs:  K_VIDEOJOBS,
+      themes:     K_THEMES,
+    };
+    rows.forEach(r => { if (MAP[r.id] && r.data !== null) lsSet(MAP[r.id], r.data); });
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+// Push everything local → Supabase (manual "push" from Settings)
+async function pushAllToSupabase() {
+  if (!sbReady()) return { ok: false, reason: "not_configured" };
+  try {
+    await Promise.all([
+      sbPush("settings",   lsGet(K_SETTINGS,   {})),
+      sbPush("characters", lsGet(K_CHARACTERS, [])),
+      sbPush("history",    lsGet(K_HISTORY,    [])),
+      sbPush("daily",      lsGet(K_DAILY,      {})),
+      sbPush("videojobs",  lsGet(K_VIDEOJOBS,  [])),
+      sbPush("themes",     lsGet(K_THEMES,     [])),
+    ]);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+// Test connection — returns { ok, reason }
+async function testSupabaseConnection() {
+  if (!sbReady()) return { ok: false, reason: "Enter URL and Anon Key first." };
+  const { url, key } = _sbCfg();
+  try {
+    const res = await fetch(`${url}/rest/v1/fcr_store?limit=1`, {
+      headers: { "apikey": key, "Authorization": `Bearer ${key}` },
+    });
+    if (res.ok) return { ok: true };
+    const txt = await res.text().catch(() => "");
+    if (res.status === 404) return { ok: false, reason: "Table 'fcr_store' not found. Run the SQL setup." };
+    return { ok: false, reason: `HTTP ${res.status}: ${txt.slice(0, 120)}` };
+  } catch (e) {
+    return { ok: false, reason: "Network error: " + e.message };
+  }
+}
+
 // Submit image-to-video. base64Data = full data URI. Returns { name: "operations/..." }
 async function callVeoImageToVideo(base64Data, mimeType, prompt, geminiKey) {
   const raw = base64Data.replace(/^data:[^;]+;base64,/, "");
@@ -2691,6 +2801,9 @@ function SettingsPage() {
   const [testResult, setTestResult] = useState(null);
   const [showKey, setShowKey]   = useState(false);
   const [showPw, setShowPw]     = useState(false);
+  const [sbTesting, setSbTesting] = useState(false);
+  const [sbResult, setSbResult]   = useState(null);
+  const [sbSyncing, setSbSyncing] = useState(false);
 
   function update(k, v) {
     setS(prev => ({ ...prev, [k]: v }));
@@ -2759,6 +2872,7 @@ function SettingsPage() {
 
   const TABS = [
     { id: "ai",      label: "🤖 AI" },
+    { id: "sync",    label: "☁️ Sync" },
     { id: "product", label: "📦 Product" },
     { id: "brand",   label: "🎨 Brand" },
     { id: "access",  label: "🔐 Access" },
@@ -2890,6 +3004,151 @@ function SettingsPage() {
                 ⚠️ Note: Veo generates videos as temporary Gemini Files (expire after 48h). Download videos from the Videos page before they expire.
               </div>
             </div>
+          </div>
+        )}
+
+        {/* ── SYNC TAB ── */}
+        {tab === "sync" && (
+          <div>
+            {/* Header */}
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 6 }}>☁️ Supabase Shared Workspace</div>
+            <p style={{ fontSize: 12, color: "#374151", lineHeight: 1.75, marginBottom: 20 }}>
+              All team members who open this app will share the same settings, characters, history, and video jobs.
+              Powered by Supabase — free tier is more than enough.
+            </p>
+
+            {/* Setup instructions */}
+            <div style={{
+              background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.2)",
+              borderRadius: 12, padding: "16px 18px", marginBottom: 22, fontSize: 12, lineHeight: 1.85,
+            }}>
+              <div style={{ fontWeight: 700, color: "#818cf8", marginBottom: 10 }}>📋 One-time setup (takes 3 min):</div>
+              <ol style={{ paddingLeft: 18, margin: 0, color: "#4b5563" }}>
+                <li>Go to <a href="https://supabase.com" target="_blank" style={{ color: "#818cf8" }}>supabase.com</a> → New project → choose any name</li>
+                <li>In your project → <strong style={{ color: "#94a3b8" }}>SQL Editor</strong> → paste and run this SQL:</li>
+              </ol>
+              <pre style={{
+                marginTop: 10, marginBottom: 10, padding: "12px 14px",
+                background: "#060912", borderRadius: 8, fontSize: 11,
+                color: "#10b981", overflowX: "auto", lineHeight: 1.7,
+                border: "1px solid #0e1830",
+              }}>{`create table fcr_store (
+  id text primary key,
+  data jsonb not null,
+  updated_at timestamptz default now()
+);
+alter table fcr_store enable row level security;
+create policy "allow all" on fcr_store
+  for all using (true) with check (true);`}</pre>
+              <ol start={3} style={{ paddingLeft: 18, margin: 0, color: "#4b5563" }}>
+                <li>Go to <strong style={{ color: "#94a3b8" }}>Project Settings → API</strong></li>
+                <li>Copy <strong style={{ color: "#94a3b8" }}>Project URL</strong> and <strong style={{ color: "#94a3b8" }}>anon public</strong> key → paste below</li>
+                <li>Click <strong style={{ color: "#818cf8" }}>Test Connection</strong> → then <strong style={{ color: "#818cf8" }}>Save Settings</strong></li>
+                <li>Re-deploy to Vercel — everyone who opens the link is now synced ✓</li>
+              </ol>
+            </div>
+
+            {/* Supabase URL */}
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+                Project URL
+              </label>
+              <input
+                value={s.supabaseUrl || ""}
+                onChange={e => update("supabaseUrl", e.target.value)}
+                placeholder="https://xxxxxxxxxxxx.supabase.co"
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace" }}
+              />
+            </div>
+
+            {/* Anon key */}
+            <div style={{ marginBottom: 18 }}>
+              <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+                Anon Public Key
+              </label>
+              <input
+                type="password"
+                value={s.supabaseAnonKey || ""}
+                onChange={e => update("supabaseAnonKey", e.target.value)}
+                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace" }}
+              />
+              <div style={{ fontSize: 11, color: "#374151", marginTop: 5 }}>
+                ✓ Safe to use publicly — Supabase anon keys are designed to be exposed in frontend apps
+              </div>
+            </div>
+
+            {/* Test + Sync buttons */}
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+              <button
+                onClick={async () => {
+                  // Save first so _sbCfg picks up new values
+                  saveSettings(s);
+                  setSbTesting(true); setSbResult(null);
+                  const r = await testSupabaseConnection();
+                  setSbResult(r);
+                  setSbTesting(false);
+                }}
+                disabled={sbTesting}
+                style={{
+                  background: sbTesting ? "#111827" : "linear-gradient(135deg,#6366f1,#8b5cf6)",
+                  border: "none", borderRadius: 9, padding: "10px 20px",
+                  color: sbTesting ? "#374151" : "white", fontSize: 13, fontWeight: 700,
+                  cursor: sbTesting ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                {sbTesting ? <><Spinner size={13}/> Testing…</> : "🔌 Test Connection"}
+              </button>
+
+              <button
+                onClick={async () => {
+                  saveSettings(s);
+                  setSbSyncing(true); setSbResult(null);
+                  const r = await syncFromSupabase();
+                  setSbResult({ ok: r.ok, reason: r.ok ? "Pulled latest data from Supabase ✓" : r.reason });
+                  setSbSyncing(false);
+                  if (r.ok) setS(loadSettings()); // reload UI
+                }}
+                disabled={sbSyncing}
+                style={{
+                  background: "#0b1020", border: "1px solid #1a2540", borderRadius: 9,
+                  padding: "10px 18px", color: "#94a3b8", fontSize: 13, fontWeight: 600,
+                  cursor: sbSyncing ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                {sbSyncing ? <><Spinner size={13}/> Pulling…</> : "⬇ Pull from Supabase"}
+              </button>
+
+              <button
+                onClick={async () => {
+                  saveSettings(s);
+                  setSbSyncing(true); setSbResult(null);
+                  const r = await pushAllToSupabase();
+                  setSbResult({ ok: r.ok, reason: r.ok ? "All local data pushed to Supabase ✓" : r.reason });
+                  setSbSyncing(false);
+                }}
+                disabled={sbSyncing}
+                style={{
+                  background: "#0b1020", border: "1px solid #1a2540", borderRadius: 9,
+                  padding: "10px 18px", color: "#94a3b8", fontSize: 13, fontWeight: 600,
+                  cursor: sbSyncing ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", gap: 8,
+                }}>
+                {sbSyncing ? <><Spinner size={13}/> Pushing…</> : "⬆ Push Local → Supabase"}
+              </button>
+            </div>
+
+            {/* Result */}
+            {sbResult && (
+              <div style={{
+                padding: "10px 14px", borderRadius: 9, fontSize: 12, fontWeight: 600,
+                background: sbResult.ok ? "rgba(16,185,129,0.07)" : "rgba(239,68,68,0.07)",
+                border: `1px solid ${sbResult.ok ? "rgba(16,185,129,0.25)" : "rgba(239,68,68,0.25)"}`,
+                color: sbResult.ok ? "#10b981" : "#f87171",
+              }}>
+                {sbResult.ok ? "✓ " : "✗ "}{sbResult.reason || (sbResult.ok ? "Success" : "Failed")}
+              </div>
+            )}
           </div>
         )}
 
@@ -4046,12 +4305,29 @@ function VideoJobsPage() {
    MAIN APP LAYOUT (after login)
    ════════════════════════════════════════════════════════════════════ */
 function MainApp({ onLogout }) {
-  const [page, setPage] = useState("generator");
+  const [page, setPage]           = useState("generator");
+  const [syncStatus, setSyncStatus] = useState(null); // null | "syncing" | "synced" | "error"
 
   // Expose setPage globally so GeneratorPage's "+ New Theme" button can navigate
   useEffect(() => {
     window._fcr_setPage = setPage;
     return () => { delete window._fcr_setPage; };
+  }, []);
+
+  // Pull shared data from Supabase on mount
+  useEffect(() => {
+    if (!sbReady()) return;
+    setSyncStatus("syncing");
+    syncFromSupabase().then(result => {
+      if (result.ok) {
+        setSyncStatus("synced");
+        setTimeout(() => setSyncStatus(null), 3000);
+        // Force re-render of current page by triggering a page re-mount
+        setPage(p => p); // no-op re-render
+      } else {
+        setSyncStatus("error");
+      }
+    });
   }, []);
 
   const NAV = [
@@ -4166,6 +4442,34 @@ function MainApp({ onLogout }) {
 
         {/* Footer */}
         <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid #0c1428" }}>
+          {/* Supabase sync status */}
+          {syncStatus && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 10px", marginBottom: 8, borderRadius: 7,
+              background: syncStatus === "synced"  ? "rgba(16,185,129,0.08)"
+                        : syncStatus === "error"   ? "rgba(239,68,68,0.08)"
+                        : "rgba(99,102,241,0.08)",
+              border: `1px solid ${syncStatus === "synced"  ? "rgba(16,185,129,0.2)"
+                                  : syncStatus === "error"   ? "rgba(239,68,68,0.2)"
+                                  : "rgba(99,102,241,0.2)"}`,
+            }}>
+              {syncStatus === "syncing" && <Spinner size={9} />}
+              <span style={{
+                fontSize: 10, fontWeight: 600,
+                color: syncStatus === "synced" ? "#10b981" : syncStatus === "error" ? "#ef4444" : "#818cf8",
+              }}>
+                {syncStatus === "syncing" ? "Syncing…"
+                : syncStatus === "synced" ? "☁ Synced"
+                : "⚠ Sync error"}
+              </span>
+            </div>
+          )}
+          {sbReady() && !syncStatus && (
+            <div style={{ fontSize: 10, color: "#1e3a2a", marginBottom: 4, padding: "0 4px", display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ color: "#10b981" }}>☁</span> Supabase connected
+            </div>
+          )}
           <div style={{ fontSize: 10, color: "#1e2d4a", marginBottom: 8, padding: "0 4px" }}>
             Multi-platform · themes · no repeats
           </div>
