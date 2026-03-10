@@ -315,7 +315,16 @@ async function checkVeoOperation(operationName, geminiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${encodeURIComponent(geminiKey)}`;
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(`Veo poll HTTP ${res.status}`);
+  console.log("[Veo poll]", res.status, JSON.stringify(data, null, 2));
+  if (!res.ok) {
+    const reason = data?.error?.message || data?.error?.status || `HTTP ${res.status}`;
+    throw new Error(`Veo API error: ${reason}`);
+  }
+  // Surface operation-level errors clearly
+  if (data.error) {
+    const reason = data.error.message || data.error.status || JSON.stringify(data.error);
+    throw new Error(`Veo operation failed: ${reason}`);
+  }
   return data;
 }
 
@@ -4090,7 +4099,17 @@ function VideoJobsPage() {
 
     setPolling(true);
     let updated = [...currentJobs];
+    const TIMEOUT_MS = 20 * 60 * 1000; // auto-fail after 20 min
     for (const job of pending) {
+      // Auto-fail if stuck > 20 minutes
+      const elapsed = Date.now() - new Date(job.createdAt).getTime();
+      if (elapsed > TIMEOUT_MS) {
+        updated = updated.map(j => j.id === job.id
+          ? { ...j, status: "failed", error: "Timed out after 20 min. Veo may have failed — try generating again." }
+          : j
+        );
+        continue;
+      }
       if (!job.operationName) continue;
       try {
         const op = await checkVeoOperation(job.operationName, key);
@@ -4109,7 +4128,12 @@ function VideoJobsPage() {
           }
         }
         // else still processing — leave status as-is
-      } catch (_) {}
+      } catch (err) {
+        updated = updated.map(j => j.id === job.id
+          ? { ...j, status: "failed", error: err.message || "API error checking status." }
+          : j
+        );
+      }
     }
     saveVideoJobs(updated);
     setJobs(updated);
@@ -4235,11 +4259,38 @@ function VideoJobsPage() {
                     Character: <span style={{ color: "#64748b" }}>{job.charName}</span>
                     {" · "}{new Date(job.createdAt).toLocaleString()}
                   </div>
-                  {(job.status === "queued" || job.status === "processing") && (
-                    <div style={{ fontSize: 11, color: "#6366f1", display: "flex", alignItems: "center", gap: 5 }}>
-                      <Spinner size={10}/> Veo 3.1 rendering… typically 2–5 min. Click Refresh to check.
-                    </div>
-                  )}
+                  {(job.status === "queued" || job.status === "processing") && (() => {
+                    const elapsedMs  = Date.now() - new Date(job.createdAt).getTime();
+                    const elapsedSec = Math.floor(elapsedMs / 1000);
+                    const elapsedMin = Math.floor(elapsedSec / 60);
+                    const remSec     = elapsedSec % 60;
+                    const timeStr    = elapsedMin > 0 ? elapsedMin + "m " + remSec + "s elapsed" : elapsedSec + "s elapsed";
+                    const pct        = Math.min(95, Math.round((elapsedMs / (8 * 60 * 1000)) * 100));
+                    const isLong     = elapsedMs > 10 * 60 * 1000;
+                    return (
+                      <div style={{ marginTop: 6 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
+                          <span style={{ color: isLong ? "#f59e0b" : "#6366f1", display: "flex", alignItems: "center", gap: 5 }}>
+                            <Spinner size={10}/> {isLong ? "Still rendering — Veo may be busy…" : "Veo 3.1 rendering…"}
+                          </span>
+                          <span style={{ color: "#64748b" }}>{timeStr} · ~{pct}%</span>
+                        </div>
+                        <div style={{ background: "#0b1020", borderRadius: 4, height: 5, overflow: "hidden" }}>
+                          <div style={{
+                            height: "100%", borderRadius: 4,
+                            width: pct + "%",
+                            background: isLong ? "linear-gradient(90deg,#f59e0b,#ef4444)" : "linear-gradient(90deg,#6366f1,#8b5cf6)",
+                            transition: "width 1s ease"
+                          }}/>
+                        </div>
+                        {isLong && (
+                          <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 4 }}>
+                            Taking longer than usual. Click Refresh Status — it may have completed or failed silently.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {job.status === "completed" && job.videoFileUri && (
                     <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                       <button
@@ -4282,7 +4333,20 @@ function VideoJobsPage() {
                     </div>
                   )}
                   {job.status === "failed" && (
-                    <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>✗ {job.error || "Generation failed"}</div>
+                    <div style={{ marginTop: 6, background: "#1a0a0a", border: "1px solid #7f1d1d", borderRadius: 6, padding: "8px 10px" }}>
+                      <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 700, marginBottom: 4 }}>✗ Generation Failed</div>
+                      <div style={{ fontSize: 11, color: "#fca5a5", fontFamily: "monospace", wordBreak: "break-word", lineHeight: 1.5 }}>
+                        {job.error || "Unknown error — open F12 Console for full Veo API response."}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(job.error || ""); }}
+                          style={{ fontSize: 10, background: "#7f1d1d", border: "none", borderRadius: 4, padding: "3px 8px", color: "#fca5a5", cursor: "pointer" }}>
+                          📋 Copy Error
+                        </button>
+                        <span style={{ fontSize: 10, color: "#64748b" }}>F12 → Console for full API response</span>
+                      </div>
+                    </div>
                   )}
                 </div>
 
