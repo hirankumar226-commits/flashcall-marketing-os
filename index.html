@@ -60,6 +60,7 @@ const K_SETTINGS = "fcr_settings_v3";
 const K_HISTORY  = "fcr_history_v3";   // [{id,title,hook,angle,platform,date}]
 const K_DAILY    = "fcr_daily_v3";     // {date:string, concepts:[], focus:string}
 const K_PW       = "fcr_pw_v3";        // separate password storage
+const K_THEMES   = "fcr_themes_v3";    // [{id,name,emoji,desc,promptInstructions,previewConcept,createdAt}]
 
 /* ── DEFAULT SETTINGS ─────────────────────────────────────────────── */
 const DEFAULTS = {
@@ -129,6 +130,10 @@ function appendHistory(concepts) {
   lsSet(K_HISTORY, merged);
 }
 function clearHistory() { lsDel(K_HISTORY); lsDel(K_DAILY); }
+
+/* ── THEME HELPERS ────────────────────────────────────────────────── */
+function loadThemes() { return lsGet(K_THEMES, []); }
+function saveThemes(t) { lsSet(K_THEMES, t); }
 
 /* ── DATE HELPERS ─────────────────────────────────────────────────── */
 function todayStr() { return new Date().toISOString().slice(0, 10); }
@@ -411,8 +416,9 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
   const [open, setOpen] = useState(false);
 
   const isIG    = concept.platform === "Instagram Reel";
-  const pColor  = isIG ? "#e1306c" : "#69c9d0";
-  const pIcon   = isIG ? "🎬" : "🎵";
+  const isYT    = concept.platform === "YouTube Short";
+  const pColor  = isIG ? "#e1306c" : isYT ? "#ff4444" : "#69c9d0";
+  const pIcon   = isIG ? "🎬" : isYT ? "📹" : "🎵";
 
   // Full script text used for copy / Higgsfield
   const fullScript = [
@@ -1258,6 +1264,11 @@ function GeneratorPage() {
   const [concepts, setConcepts]     = useState([]);
   const [toast, setToast]           = useState(null);
   const [hasKey, setHasKey]         = useState(false);
+  // ── NEW: Themes, platforms, count ─────────────────────────────────
+  const [selectedPlatforms, setSelectedPlatforms] = useState(["Instagram Reel", "TikTok Video"]);
+  const [conceptCount, setConceptCount]           = useState(10);
+  const [selectedTheme, setSelectedTheme]         = useState("default");
+  const [themes, setThemes]                       = useState(() => loadThemes());
 
   // Toast helper — stable across renders
   const showToast = useCallback((msg, type = "success") => {
@@ -1275,11 +1286,31 @@ function GeneratorPage() {
     }
   }, []);
 
+  // Distribute concepts evenly across selected platforms
+  function distributePlatforms(platforms, total) {
+    if (!platforms.length) return [["Instagram Reel", total]];
+    const base = Math.floor(total / platforms.length);
+    const rem  = total % platforms.length;
+    return platforms.map((p, i) => [p, base + (i < rem ? 1 : 0)]);
+  }
+
+  function togglePlatform(p) {
+    setSelectedPlatforms(prev =>
+      prev.includes(p)
+        ? prev.length > 1 ? prev.filter(x => x !== p) : prev // keep at least 1
+        : [...prev, p]
+    );
+  }
+
   async function generate() {
     if (generating) return;
     const s = loadSettings();
     if (!s.geminiApiKey || !s.geminiApiKey.trim()) {
       showToast("Add your Gemini API key in ⚙️ Settings first.", "error");
+      return;
+    }
+    if (selectedPlatforms.length === 0) {
+      showToast("Select at least one platform.", "error");
       return;
     }
 
@@ -1288,22 +1319,43 @@ function GeneratorPage() {
     setProgress("Reading brand context...");
 
     try {
-      const history = loadHistory();
+      const history    = loadHistory();
       const recentPrev = history.slice(0, 70);
-
-      const prevList = recentPrev.length > 0
+      const prevList   = recentPrev.length > 0
         ? recentPrev.map((h, i) =>
             `${i + 1}. [${h.platform}] "${h.title}" — Angle: ${h.angle} — Hook: "${h.hook}"`
           ).join("\n")
         : "None — this is the first generation!";
 
-      setProgress("Generating 10 unique concepts...");
+      setProgress(`Generating ${conceptCount} unique concepts...`);
 
       const systemPrompt = buildBrandContext();
 
-      const userPrompt = `Generate EXACTLY 10 unique short-form video concepts for TODAY.
-Distribution: 5 Instagram Reels + 5 TikTok Videos (alternate between them).
+      // Theme context
+      const theme      = themes.find(t => t.id === selectedTheme);
+      const themeBlock = theme
+        ? `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONTENT THEME: ${theme.name} ${theme.emoji}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${theme.promptInstructions}
 
+ALL ${conceptCount} CONCEPTS MUST follow this theme's style, tone, and format.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
+        : "";
+
+      // Platform distribution
+      const dist       = distributePlatforms(selectedPlatforms, conceptCount);
+      const platformStr = dist.map(([p, n]) => `${n} ${p}${n > 1 ? "s" : ""}`).join(" + ");
+      const platformSeq = dist.flatMap(([p, n]) => Array(n).fill(p));
+
+      // Angle assignments cycling through ANGLES array
+      const angleAssignments = platformSeq.map((_, i) =>
+        `Concept ${i + 1} [${platformSeq[i]}]: ${ANGLES[i % ANGLES.length]}`
+      ).join("\n");
+
+      const userPrompt = `Generate EXACTLY ${conceptCount} unique short-form video concepts for TODAY.
+Platform distribution: ${platformStr}
+${themeBlock}
 ${focus.trim() ? `TODAY'S BRIEF / FOCUS:\n${focus.trim()}\n` : "No specific brief — create diverse, evergreen content.\n"}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1313,18 +1365,9 @@ PREVIOUSLY USED CONCEPTS — DO NOT REPEAT:
 ${prevList}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ANGLE VARIETY RULES (each concept uses a different angle):
+PLATFORM + ANGLE ASSIGNMENTS (follow exactly):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Concept 1:  hot take
-Concept 2:  personal story / confession
-Concept 3:  myth-busting
-Concept 4:  step-by-step how-to
-Concept 5:  behind-the-scenes
-Concept 6:  data / stats revelation
-Concept 7:  POV storytelling
-Concept 8:  before vs after
-Concept 9:  nobody talks about this
-Concept 10: trend reaction
+${angleAssignments}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 SCRIPT STRUCTURE REQUIREMENTS:
@@ -1340,7 +1383,7 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
   {
     "platform": "Instagram Reel",
     "title": "short internal title for this concept",
-    "angle": "exact angle name from the list above",
+    "angle": "exact angle name from assignments above",
     "pillar": "one of: Success Stories | Education | Platform Tips | Industry Insights | Social Proof",
     "hook": "the single spoken hook sentence for the first 3 seconds",
     "hookOnScreen": "3–5 word bold text overlay for the screen",
@@ -1365,32 +1408,32 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
         throw new Error("AI returned an empty or invalid concept list. Please try again.");
       }
 
-      // Normalise and assign IDs
-      const finalConcepts = parsed.map((c, i) => ({
-        id:              uid(),
-        platform:        typeof c.platform === "string" && c.platform.includes("TikTok")
-                           ? "TikTok Video"
-                           : "Instagram Reel",
-        title:           c.title          || `Concept ${i + 1}`,
-        angle:           c.angle          || ANGLES[i % ANGLES.length],
-        pillar:          c.pillar         || "",
-        hook:            c.hook           || c.script?.hook || "",
-        hookOnScreen:    c.hookOnScreen   || "",
-        script: {
-          hook: c.script?.hook || c.hook  || "",
-          body: c.script?.body            || "",
-          cta:  c.script?.cta             || "",
-        },
-        visualStyle:     c.visualStyle    || "talking head",
-        audioSuggestion: c.audioSuggestion|| "",
-        hashtags:        c.hashtags       || "",
-        used:            false,
-      }));
+      // Normalise and assign platforms from our sequence
+      const finalConcepts = parsed.map((c, i) => {
+        const assignedPlatform = platformSeq[i] || platformSeq[platformSeq.length - 1] || "Instagram Reel";
+        return {
+          id:              uid(),
+          platform:        assignedPlatform,
+          title:           c.title          || `Concept ${i + 1}`,
+          angle:           c.angle          || ANGLES[i % ANGLES.length],
+          pillar:          c.pillar         || "",
+          hook:            c.hook           || c.script?.hook || "",
+          hookOnScreen:    c.hookOnScreen   || "",
+          script: {
+            hook: c.script?.hook || c.hook  || "",
+            body: c.script?.body            || "",
+            cta:  c.script?.cta             || "",
+          },
+          visualStyle:     c.visualStyle    || "talking head",
+          audioSuggestion: c.audioSuggestion|| "",
+          hashtags:        c.hashtags       || "",
+          used:            false,
+          theme:           theme ? theme.name : null,
+        };
+      });
 
-      // Ensure first 5 are IG, next 5 are TikTok regardless of what AI returned
-      const igPlatform  = finalConcepts.filter(c => c.platform === "Instagram Reel");
-      const ttPlatform  = finalConcepts.filter(c => c.platform === "TikTok Video");
-      const allConcepts = [...igPlatform, ...ttPlatform];
+      // Group by platform for display
+      const allConcepts = finalConcepts;
 
       setConcepts(allConcepts);
 
@@ -1559,6 +1602,7 @@ CRITICAL OUTPUT RULES:
 
   const igConcepts = concepts.filter(c => c.platform === "Instagram Reel");
   const ttConcepts = concepts.filter(c => c.platform === "TikTok Video");
+  const ytConcepts = concepts.filter(c => c.platform === "YouTube Short");
   const histCount  = loadHistory().length;
   const hasToday   = concepts.length > 0;
 
@@ -1659,6 +1703,154 @@ CRITICAL OUTPUT RULES:
             background: "#0a0d1c", border: "1px solid #0e1830",
             borderRadius: 14, padding: 22, marginBottom: 24,
           }}>
+
+            {/* ── THEME SELECTOR ── */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: "#374151",
+                textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 8,
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                🎨 Content Theme
+                <span style={{ color: "#1e2d4a", fontWeight: 400, textTransform: "none", fontSize: 10 }}>
+                  — pick a style for your concepts
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {/* Default theme pill */}
+                <button
+                  onClick={() => setSelectedTheme("default")}
+                  style={{
+                    padding: "6px 14px", borderRadius: 20, cursor: "pointer",
+                    border: `1px solid ${selectedTheme === "default" ? "#6366f1" : "#111827"}`,
+                    background: selectedTheme === "default" ? "rgba(99,102,241,0.12)" : "transparent",
+                    color: selectedTheme === "default" ? "#818cf8" : "#4b5563",
+                    fontSize: 12, fontWeight: selectedTheme === "default" ? 700 : 400,
+                    transition: "all 0.15s",
+                  }}>
+                  ⚡ Default (Mixed)
+                </button>
+                {themes.map(t => (
+                  <button
+                    key={t.id}
+                    onClick={() => setSelectedTheme(t.id)}
+                    style={{
+                      padding: "6px 14px", borderRadius: 20, cursor: "pointer",
+                      border: `1px solid ${selectedTheme === t.id ? "#8b5cf6" : "#111827"}`,
+                      background: selectedTheme === t.id ? "rgba(139,92,246,0.12)" : "transparent",
+                      color: selectedTheme === t.id ? "#a78bfa" : "#4b5563",
+                      fontSize: 12, fontWeight: selectedTheme === t.id ? 700 : 400,
+                      transition: "all 0.15s",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}>
+                    <span>{t.emoji}</span> {t.name}
+                  </button>
+                ))}
+                <button
+                  onClick={() => {
+                    // Switch to themes page — bubble up via a custom event
+                    window._fcr_setPage && window._fcr_setPage("themes");
+                  }}
+                  style={{
+                    padding: "6px 12px", borderRadius: 20, cursor: "pointer",
+                    border: "1px dashed #1e2d4a",
+                    background: "transparent",
+                    color: "#374151", fontSize: 11,
+                    transition: "all 0.15s",
+                  }}>
+                  + New Theme
+                </button>
+              </div>
+            </div>
+
+            {/* ── PLATFORM SELECTOR ── */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: "#374151",
+                textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 8,
+              }}>
+                📱 Platforms <span style={{ color: "#1e2d4a", fontWeight: 400, textTransform: "none", fontSize: 10 }}>— select one or more</span>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[
+                  { id: "Instagram Reel", icon: "🎬", color: "#e1306c", label: "Instagram Reels" },
+                  { id: "TikTok Video",   icon: "🎵", color: "#69c9d0", label: "TikTok Videos"   },
+                  { id: "YouTube Short",  icon: "📹", color: "#ff4444", label: "YouTube Shorts"  },
+                ].map(p => {
+                  const on = selectedPlatforms.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      onClick={() => togglePlatform(p.id)}
+                      style={{
+                        padding: "8px 16px", borderRadius: 10, cursor: "pointer",
+                        border: `1px solid ${on ? p.color + "50" : "#111827"}`,
+                        background: on ? `${p.color}14` : "transparent",
+                        color: on ? p.color : "#4b5563",
+                        fontSize: 12, fontWeight: on ? 700 : 400,
+                        display: "flex", alignItems: "center", gap: 7,
+                        transition: "all 0.15s",
+                      }}>
+                      <span style={{ fontSize: 15 }}>{p.icon}</span>
+                      {p.label}
+                      {on && (
+                        <span style={{
+                          width: 16, height: 16, borderRadius: "50%",
+                          background: p.color, color: "#000",
+                          fontSize: 9, fontWeight: 800,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          flexShrink: 0,
+                        }}>✓</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* ── COUNT SELECTOR ── */}
+            <div style={{ marginBottom: 18 }}>
+              <div style={{
+                fontSize: 11, fontWeight: 600, color: "#374151",
+                textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 8,
+              }}>
+                🔢 How Many Concepts?
+              </div>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                {[5, 10, 15, 20].map(n => (
+                  <button
+                    key={n}
+                    onClick={() => setConceptCount(n)}
+                    style={{
+                      padding: "7px 18px", borderRadius: 9, cursor: "pointer",
+                      border: `1px solid ${conceptCount === n ? "#6366f1" : "#111827"}`,
+                      background: conceptCount === n ? "rgba(99,102,241,0.12)" : "transparent",
+                      color: conceptCount === n ? "#818cf8" : "#4b5563",
+                      fontSize: 13, fontWeight: conceptCount === n ? 700 : 400,
+                      transition: "all 0.15s",
+                    }}>
+                    {n}
+                  </button>
+                ))}
+                <input
+                  type="number"
+                  min={1} max={30}
+                  value={conceptCount}
+                  onChange={e => {
+                    const v = Math.min(30, Math.max(1, parseInt(e.target.value) || 1));
+                    setConceptCount(v);
+                  }}
+                  style={{
+                    width: 70, padding: "7px 10px",
+                    background: "#060912", border: "1px solid #1a2540",
+                    borderRadius: 9, color: "#f1f5f9", fontSize: 13,
+                    textAlign: "center",
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* ── FOCUS / BRIEF ── */}
             <label style={{
               fontSize: 11, fontWeight: 600, color: "#374151",
               display: "block", marginBottom: 8,
@@ -1680,6 +1872,7 @@ CRITICAL OUTPUT RULES:
               }}
             />
 
+            {/* ── GENERATE BUTTON ── */}
             <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
               <button
                 onClick={generate}
@@ -1699,7 +1892,7 @@ CRITICAL OUTPUT RULES:
                 }}>
                 {generating
                   ? <><Spinner size={13} /> {progress || "Generating…"}</>
-                  : "⚡ Generate 10 Concepts"}
+                  : `⚡ Generate ${conceptCount} Concepts`}
               </button>
 
               {hasToday && !generating && (
@@ -1779,6 +1972,26 @@ CRITICAL OUTPUT RULES:
                 </div>
               )}
 
+              {/* YouTube Shorts */}
+              {ytConcepts.length > 0 && (
+                <div style={{ marginBottom: 32 }}>
+                  <SectionDivider
+                    icon="📹" title="YouTube Shorts"
+                    count={ytConcepts.length} color="#ff4444"
+                  />
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {ytConcepts.map((c, i) => (
+                      <ConceptCard
+                        key={c.id}
+                        concept={c}
+                        index={i}
+                        onRemove={handleRemove}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Summary bar */}
               <div style={{
                 background: "rgba(99,102,241,0.05)",
@@ -1788,8 +2001,10 @@ CRITICAL OUTPUT RULES:
                 fontSize: 12, marginBottom: 8,
               }}>
                 <span style={{ color: "#6366f1", fontWeight: 700 }}>📊 Today's batch</span>
-                <span style={{ color: "#94a3b8" }}>🎬 {igConcepts.length} Instagram Reels</span>
-                <span style={{ color: "#94a3b8" }}>🎵 {ttConcepts.length} TikTok Videos</span>
+                {igConcepts.length > 0 && <span style={{ color: "#94a3b8" }}>🎬 {igConcepts.length} Instagram Reels</span>}
+                {ttConcepts.length > 0 && <span style={{ color: "#94a3b8" }}>🎵 {ttConcepts.length} TikTok Videos</span>}
+                {ytConcepts.length > 0 && <span style={{ color: "#94a3b8" }}>📹 {ytConcepts.length} YouTube Shorts</span>}
+                {concepts[0]?.theme && <span style={{ color: "#8b5cf6" }}>🎨 Theme: {concepts[0].theme}</span>}
                 <span style={{ color: "#374151" }}>📚 {histCount} total concepts tracked</span>
               </div>
             </div>
@@ -1834,7 +2049,7 @@ CRITICAL OUTPUT RULES:
                 fontSize: 13, color: "#374151",
                 maxWidth: 400, margin: "0 auto", lineHeight: 1.75,
               }}>
-                Click "Generate 10 Concepts" to get 5 Instagram Reels + 5 TikTok scripts.
+                Pick a theme, choose your platforms and concept count, then hit Generate.
                 Each batch is unique — your full history is tracked to guarantee no repeats, ever.
               </div>
               <div style={{ marginTop: 16 }}>
@@ -2372,13 +2587,557 @@ function SettingsPage() {
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   THEMES PAGE — Build and manage content themes
+   ════════════════════════════════════════════════════════════════════ */
+function ThemesPage({ onNavigateGenerator }) {
+  const [themes, setThemes]           = useState(() => loadThemes());
+  const [showForm, setShowForm]       = useState(false);
+  const [name, setName]               = useState("");
+  const [emoji, setEmoji]             = useState("🎬");
+  const [desc, setDesc]               = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [previewing, setPreviewing]   = useState(false);
+  const [preview, setPreview]         = useState(null);
+  const [previewErr, setPreviewErr]   = useState(null);
+  const [toast, setToast]             = useState(null);
+  const [confirmingTheme, setConfirmingTheme] = useState(null); // theme pending confirm
+
+  function showToast(msg, type = "success") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }
+
+  function resetForm() {
+    setName(""); setEmoji("🎬"); setDesc(""); setInstructions("");
+    setPreview(null); setPreviewErr(null);
+  }
+
+  async function handlePreview() {
+    if (!name.trim() || !instructions.trim()) {
+      setPreviewErr("Add a name and prompt instructions before previewing.");
+      return;
+    }
+    const s = loadSettings();
+    if (!s.geminiApiKey?.trim()) {
+      setPreviewErr("Add your Gemini API key in ⚙️ Settings first.");
+      return;
+    }
+
+    setPreviewing(true);
+    setPreview(null);
+    setPreviewErr(null);
+
+    try {
+      const systemPrompt = buildBrandContext();
+      const userPrompt = `Generate EXACTLY 1 short-form video concept as a preview sample.
+
+CONTENT THEME: ${name}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${instructions}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+This is a PREVIEW — generate 1 concept that perfectly demonstrates what content in this theme looks like.
+
+Return ONLY a valid JSON array with exactly 1 object:
+[
+  {
+    "platform": "Instagram Reel",
+    "title": "short internal title",
+    "angle": "hot take",
+    "pillar": "Education",
+    "hook": "spoken hook sentence max 10 words",
+    "hookOnScreen": "3-5 word screen text",
+    "script": {
+      "hook": "0-3s spoken script",
+      "body": "3-45s script with [visual direction cues]",
+      "cta": "45-60s CTA script"
+    },
+    "visualStyle": "talking head",
+    "audioSuggestion": "audio description",
+    "hashtags": "#tag1 #tag2 #tag3"
+  }
+]`;
+
+      const raw    = await callGemini(systemPrompt, userPrompt, 4000);
+      const parsed = extractJSONArray(raw);
+      if (!Array.isArray(parsed) || parsed.length === 0) throw new Error("No concept returned.");
+
+      const c = parsed[0];
+      setPreview({
+        id: uid(), platform: "Instagram Reel",
+        title: c.title || "Preview Concept",
+        angle: c.angle || "hot take",
+        pillar: c.pillar || "",
+        hook: c.hook || c.script?.hook || "",
+        hookOnScreen: c.hookOnScreen || "",
+        script: { hook: c.script?.hook || "", body: c.script?.body || "", cta: c.script?.cta || "" },
+        visualStyle: c.visualStyle || "talking head",
+        audioSuggestion: c.audioSuggestion || "",
+        hashtags: c.hashtags || "",
+        used: false,
+      });
+
+    } catch (err) {
+      setPreviewErr(err?.message || "Preview failed. Try again.");
+    } finally {
+      setPreviewing(false);
+    }
+  }
+
+  function confirmAndSave() {
+    if (!name.trim() || !instructions.trim()) return;
+    const newTheme = {
+      id:                 uid(),
+      name:               name.trim(),
+      emoji:              emoji.trim() || "🎬",
+      desc:               desc.trim(),
+      promptInstructions: instructions.trim(),
+      previewConcept:     preview || null,
+      createdAt:          new Date().toISOString(),
+    };
+    const updated = [...themes, newTheme];
+    setThemes(updated);
+    saveThemes(updated);
+    showToast(`Theme "${newTheme.name}" added!`);
+    setShowForm(false);
+    resetForm();
+  }
+
+  function deleteTheme(id) {
+    if (!window.confirm("Delete this theme?")) return;
+    const updated = themes.filter(t => t.id !== id);
+    setThemes(updated);
+    saveThemes(updated);
+    showToast("Theme deleted.", "success");
+  }
+
+  // Preset themes to quick-start
+  const PRESETS = [
+    {
+      name: "Life of Entrepreneur",
+      emoji: "🚀",
+      desc: "Documentary-style follow-along series showing the real journey of building a business",
+      promptInstructions: `THEME: Life of Entrepreneur — Documentary Series
+
+STYLE: Raw, authentic, first-person documentary. This is a weekly series following a real entrepreneur's journey.
+
+FORMAT RULES:
+- Every concept is an episode in an ongoing series
+- Use "This week..." or "Episode [X]:" framing
+- Show the messy reality — not just wins, include failures, pivots, lessons
+- Personal, diary-like tone. No polish, no perfection.
+- Visual: walking shots, behind desk, on calls, at whiteboard
+
+CONTENT AREAS:
+- Weekly revenue/growth updates with real numbers
+- Client acquisition stories (what worked, what didn't)
+- Team building challenges and decisions
+- Product decisions and why we made them
+- Mindset struggles and how they were overcome
+- "If I started today, I would..." reflections
+
+HOOK STYLES:
+- "This week I almost gave up — here's what stopped me"
+- "We hit $X. Here's exactly what changed."
+- "I made a $X mistake this week. Here's the lesson."`,
+    },
+    {
+      name: "Business Education",
+      emoji: "📚",
+      desc: "How-to series teaching business frameworks, strategies and tactics for consultants",
+      promptInstructions: `THEME: Business Education Series
+
+STYLE: Clear, authoritative, step-by-step. Teacher-to-student tone. Every video teaches one actionable concept.
+
+FORMAT RULES:
+- Lead with a counterintuitive insight or common mistake
+- Teach ONE framework, tactic, or concept per video
+- Use specific examples, numbers, and real scenarios
+- End with an actionable takeaway the viewer can use today
+- Structure: Problem → Framework → Example → Action Step
+
+CONTENT AREAS:
+- How to price your consulting services
+- Client acquisition frameworks
+- Proposal and pitch templates
+- How to scale from 1:1 to group offers
+- Time management for consultants
+- Building authority and thought leadership
+
+HOOK STYLES:
+- "Most consultants get this completely wrong..."
+- "The framework that took me from $X to $X per month"
+- "5 steps to [specific outcome] — without [common pain]"`,
+    },
+  ];
+
+  function addPreset(preset) {
+    setName(preset.name);
+    setEmoji(preset.emoji);
+    setDesc(preset.desc);
+    setInstructions(preset.promptInstructions);
+    setShowForm(true);
+    setPreview(null);
+    setPreviewErr(null);
+  }
+
+  return (
+    <div style={{ padding: 28, fontFamily: "'DM Sans', sans-serif", height: "100%", overflowY: "auto" }}>
+      {toast && <Toast {...toast} />}
+
+      {/* Header */}
+      <div style={{ marginBottom: 22 }}>
+        <h1 style={{
+          fontSize: 22, fontWeight: 800, color: "#f1f5f9",
+          letterSpacing: "-0.5px", marginBottom: 5,
+          fontFamily: "'Bricolage Grotesque', sans-serif",
+        }}>
+          Content Themes
+        </h1>
+        <p style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
+          Build reusable content themes. Each theme shapes how concepts are written — tone, format, series style.
+          Select a theme in the Generator before hitting Generate.
+        </p>
+      </div>
+
+      {/* Existing themes */}
+      {themes.length > 0 && (
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 11, color: "#374151", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>
+            Your Themes ({themes.length})
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {themes.map(t => (
+              <div
+                key={t.id}
+                className="hover-lift"
+                style={{
+                  background: "#090d1b", border: "1px solid #0e1830",
+                  borderRadius: 14, padding: "18px 20px",
+                  display: "flex", alignItems: "flex-start", gap: 14,
+                }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+                  background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.2)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 22,
+                }}>
+                  {t.emoji}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 3 }}>
+                    {t.name}
+                  </div>
+                  {t.desc && (
+                    <div style={{ fontSize: 12, color: "#475569", lineHeight: 1.6, marginBottom: 8 }}>
+                      {t.desc}
+                    </div>
+                  )}
+                  <div style={{
+                    fontSize: 11, color: "#374151",
+                    fontFamily: "'DM Mono', monospace",
+                    background: "rgba(0,0,0,0.25)", borderRadius: 7,
+                    padding: "6px 10px",
+                    maxHeight: 60, overflow: "hidden",
+                    borderLeft: "2px solid #1e2d4a",
+                  }}>
+                    {t.promptInstructions.slice(0, 180)}{t.promptInstructions.length > 180 ? "…" : ""}
+                  </div>
+                  <div style={{ marginTop: 8, fontSize: 10, color: "#1e2d4a" }}>
+                    Created {new Date(t.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <button
+                    onClick={() => { onNavigateGenerator(); }}
+                    style={{
+                      background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.25)",
+                      borderRadius: 7, padding: "6px 12px",
+                      color: "#818cf8", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}>
+                    ⚡ Use Theme
+                  </button>
+                  <button
+                    onClick={() => deleteTheme(t.id)}
+                    style={{
+                      background: "transparent", border: "1px solid #111827",
+                      borderRadius: 7, padding: "6px 12px",
+                      color: "#374151", fontSize: 11, cursor: "pointer",
+                    }}>
+                    🗑 Delete
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Preset quick-starts */}
+      {!showForm && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 11, color: "#374151", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12 }}>
+            Quick-Start Presets
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            {PRESETS.map((p, i) => (
+              <button
+                key={i}
+                onClick={() => addPreset(p)}
+                className="hover-lift"
+                style={{
+                  background: "#090d1b", border: "1px solid #0e1830",
+                  borderRadius: 12, padding: "14px 18px",
+                  cursor: "pointer", textAlign: "left",
+                  maxWidth: 240,
+                }}>
+                <div style={{ fontSize: 22, marginBottom: 7 }}>{p.emoji}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>
+                  {p.name}
+                </div>
+                <div style={{ fontSize: 11, color: "#4b5563", lineHeight: 1.55 }}>
+                  {p.desc.slice(0, 80)}…
+                </div>
+                <div style={{ marginTop: 10, fontSize: 11, color: "#6366f1", fontWeight: 600 }}>
+                  Use as template →
+                </div>
+              </button>
+            ))}
+            <button
+              onClick={() => { resetForm(); setShowForm(true); }}
+              style={{
+                background: "transparent", border: "1px dashed #1e2d4a",
+                borderRadius: 12, padding: "14px 18px",
+                cursor: "pointer", textAlign: "left",
+                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                minWidth: 140, gap: 8,
+                color: "#374151",
+              }}>
+              <div style={{ fontSize: 28 }}>+</div>
+              <div style={{ fontSize: 12, fontWeight: 600 }}>Build from scratch</div>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Theme builder form */}
+      {showForm && (
+        <div style={{
+          background: "#090d1b", border: "1px solid rgba(99,102,241,0.2)",
+          borderRadius: 16, padding: 24,
+          boxShadow: "0 0 40px rgba(99,102,241,0.08)",
+          animation: "fadeUp 0.25s ease",
+          marginBottom: 24,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+            <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9", fontFamily: "'Bricolage Grotesque', sans-serif" }}>
+              {preview ? "✓ Preview looks good? Confirm to save." : "New Content Theme"}
+            </div>
+            <button
+              onClick={() => { setShowForm(false); resetForm(); }}
+              style={{ background: "none", border: "none", color: "#374151", cursor: "pointer", fontSize: 18 }}>
+              ×
+            </button>
+          </div>
+
+          {!preview && (
+            <>
+              {/* Name + Emoji row */}
+              <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
+                <div style={{ width: 70 }}>
+                  <label style={{ fontSize: 10, color: "#374151", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, display: "block", marginBottom: 6 }}>
+                    Icon
+                  </label>
+                  <input
+                    value={emoji}
+                    onChange={e => setEmoji(e.target.value)}
+                    maxLength={2}
+                    style={{
+                      width: "100%", background: "#060912", border: "1px solid #111827",
+                      borderRadius: 8, padding: "9px 10px", color: "#f1f5f9",
+                      fontSize: 20, textAlign: "center",
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ fontSize: 10, color: "#374151", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, display: "block", marginBottom: 6 }}>
+                    Theme Name *
+                  </label>
+                  <input
+                    value={name}
+                    onChange={e => setName(e.target.value)}
+                    placeholder="e.g. Life of Entrepreneur"
+                    style={{
+                      width: "100%", background: "#060912", border: "1px solid #111827",
+                      borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Short description */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 10, color: "#374151", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, display: "block", marginBottom: 6 }}>
+                  Short Description <span style={{ color: "#1e2d4a", fontWeight: 400, textTransform: "none" }}>(shown in theme list)</span>
+                </label>
+                <input
+                  value={desc}
+                  onChange={e => setDesc(e.target.value)}
+                  placeholder="1-2 sentence description of this theme"
+                  style={{
+                    width: "100%", background: "#060912", border: "1px solid #111827",
+                    borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13,
+                  }}
+                />
+              </div>
+
+              {/* Prompt instructions */}
+              <div style={{ marginBottom: 20 }}>
+                <label style={{ fontSize: 10, color: "#374151", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, display: "block", marginBottom: 6 }}>
+                  Theme Prompt Instructions * <span style={{ color: "#1e2d4a", fontWeight: 400, textTransform: "none" }}>(the AI reads this when generating)</span>
+                </label>
+                <textarea
+                  value={instructions}
+                  onChange={e => setInstructions(e.target.value)}
+                  rows={10}
+                  placeholder={`Describe this theme's style in detail. The more specific, the better the output.
+
+Example:
+THEME: Life of Entrepreneur — Documentary Series
+
+STYLE: Raw, authentic, first-person documentary. This is a weekly series following a real entrepreneur's journey.
+
+FORMAT RULES:
+- Every concept is an episode in an ongoing series
+- Use "This week..." or "Episode X:" framing
+- Show the messy reality — not just wins, include failures
+- Personal, diary-like tone
+
+CONTENT AREAS:
+- Weekly revenue updates with real numbers
+- Client acquisition stories
+- Team and product decisions
+
+HOOK STYLES:
+- "This week I almost gave up — here's what stopped me"
+- "We hit $X. Here's exactly what changed."`}
+                  style={{
+                    width: "100%", background: "#060912", border: "1px solid #111827",
+                    borderRadius: 8, padding: "11px 14px", color: "#f1f5f9",
+                    fontSize: 12, resize: "vertical", lineHeight: 1.75,
+                    fontFamily: "'DM Mono', monospace",
+                  }}
+                />
+                <div style={{ fontSize: 11, color: "#374151", marginTop: 4 }}>
+                  💡 Tip: Include style rules, content areas, hook patterns, and tone notes. This exact text gets injected into the AI prompt.
+                </div>
+              </div>
+
+              {previewErr && (
+                <div style={{
+                  background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.2)",
+                  borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#f87171",
+                  marginBottom: 16,
+                }}>
+                  ✗ {previewErr}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                <button
+                  onClick={handlePreview}
+                  disabled={previewing || !name.trim() || !instructions.trim()}
+                  style={{
+                    background: previewing ? "#111827" : "linear-gradient(135deg, #f59e0b, #ef4444)",
+                    border: "none", borderRadius: 9, padding: "11px 24px",
+                    color: previewing ? "#374151" : "white",
+                    fontSize: 13, fontWeight: 700,
+                    cursor: previewing || !name.trim() || !instructions.trim() ? "not-allowed" : "pointer",
+                    display: "flex", alignItems: "center", gap: 8,
+                    boxShadow: previewing ? "none" : "0 4px 16px rgba(245,158,11,.3)",
+                  }}>
+                  {previewing ? <><Spinner size={13} /> Generating preview…</> : "🔍 Preview with AI"}
+                </button>
+                <div style={{ fontSize: 12, color: "#374151", display: "flex", alignItems: "center" }}>
+                  Preview generates 1 sample concept so you can check the style before saving
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Preview concept display */}
+          {preview && (
+            <div style={{ animation: "fadeUp 0.25s ease" }}>
+              <div style={{
+                fontSize: 12, color: "#fbbf24",
+                background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)",
+                borderRadius: 8, padding: "10px 14px", marginBottom: 14,
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+                🎯 Sample concept in the <strong>{name}</strong> theme. Does this match your vision?
+              </div>
+              <ConceptCard concept={preview} index={0} onRemove={null} />
+              <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+                <button
+                  onClick={confirmAndSave}
+                  style={{
+                    background: "linear-gradient(135deg, #10b981, #059669)",
+                    border: "none", borderRadius: 9, padding: "12px 28px",
+                    color: "white", fontSize: 13, fontWeight: 700,
+                    cursor: "pointer",
+                    boxShadow: "0 4px 16px rgba(16,185,129,.3)",
+                    display: "flex", alignItems: "center", gap: 8,
+                  }}>
+                  ✓ Looks good — Save Theme
+                </button>
+                <button
+                  onClick={() => { setPreview(null); setPreviewErr(null); }}
+                  style={{
+                    background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.2)",
+                    borderRadius: 9, padding: "12px 20px",
+                    color: "#f87171", fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  }}>
+                  ✗ Try Again — Edit Instructions
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {themes.length === 0 && !showForm && (
+        <div style={{ textAlign: "center", padding: "40px 20px", color: "#374151" }}>
+          <div style={{ fontSize: 48, marginBottom: 16 }}>🎨</div>
+          <div style={{ fontSize: 15, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>
+            No themes yet
+          </div>
+          <div style={{ fontSize: 13, color: "#374151", maxWidth: 380, margin: "0 auto", lineHeight: 1.75 }}>
+            Themes let you generate different styles of content — educational series, documentary, industry insights, and more.
+            Use a preset above or build your own from scratch.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
    MAIN APP LAYOUT (after login)
    ════════════════════════════════════════════════════════════════════ */
 function MainApp({ onLogout }) {
   const [page, setPage] = useState("generator");
 
+  // Expose setPage globally so GeneratorPage's "+ New Theme" button can navigate
+  useEffect(() => {
+    window._fcr_setPage = setPage;
+    return () => { delete window._fcr_setPage; };
+  }, []);
+
   const NAV = [
     { id: "generator", icon: "⚡", label: "Generate"  },
+    { id: "themes",    icon: "🎨", label: "Themes"    },
     { id: "history",   icon: "📚", label: "History"   },
     { id: "settings",  icon: "⚙️", label: "Settings"  },
   ];
@@ -2434,6 +3193,7 @@ function MainApp({ onLogout }) {
           {[
             { icon: "🎬", label: "Instagram Reels", color: "#e1306c" },
             { icon: "🎵", label: "TikTok Videos",   color: "#69c9d0" },
+            { icon: "📹", label: "YouTube Shorts",  color: "#ff4444" },
           ].map(p => (
             <div key={p.label} style={{
               background: `${p.color}08`,
@@ -2476,7 +3236,7 @@ function MainApp({ onLogout }) {
         {/* Footer */}
         <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid #0c1428" }}>
           <div style={{ fontSize: 10, color: "#1e2d4a", marginBottom: 8, padding: "0 4px" }}>
-            10 unique concepts/day · no repeats
+            Multi-platform · themes · no repeats
           </div>
           <button
             onClick={onLogout}
@@ -2495,6 +3255,7 @@ function MainApp({ onLogout }) {
       {/* ── Main content ── */}
       <div style={{ flex: 1, overflowY: "auto", background: "#04060e" }}>
         {page === "generator" && <GeneratorPage />}
+        {page === "themes"    && <ThemesPage onNavigateGenerator={() => setPage("generator")} />}
         {page === "history"   && <HistoryPage   />}
         {page === "settings"  && <SettingsPage  />}
       </div>
