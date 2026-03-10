@@ -4874,8 +4874,9 @@ function VideoJobsPage() {
             : j
           );
         }
-        continue;
-      }
+
+      // ── HeyGen ───────────────────────────────────────────────────────────
+      } else if (job.provider === "heygen") {
         if (!heygenKey || !job.heygenVideoId) continue;
         try {
           const st = await heygenGetVideoStatus(job.heygenVideoId, heygenKey);
@@ -4885,7 +4886,6 @@ function VideoJobsPage() {
               : j
             );
           } else if (st.status === "failed") {
-            // HeyGen returns error as an object {code, message, detail} or a plain string
             const errObj = st.error || st.error_detail || st.message || st.msg;
             const reason = typeof errObj === "object" && errObj !== null
               ? (errObj.detail || errObj.message || JSON.stringify(errObj))
@@ -4896,14 +4896,14 @@ function VideoJobsPage() {
             );
           }
         } catch (e) {
-          // Network/parse error during polling — surface it instead of silently swallowing
           updated = updated.map(j => j.id === job.id
             ? { ...j, status: "failed", error: `Poll error: ${e.message}` }
             : j
           );
         }
+
+      // ── Legacy Veo ───────────────────────────────────────────────────────
       } else {
-        // Legacy Veo jobs
         if (!geminiKey || !job.operationName) continue;
         try {
           const op = await checkVeoOperation(job.operationName, geminiKey);
