@@ -1884,7 +1884,7 @@ function GeneratorPage() {
   const [hasKey, setHasKey]         = useState(false);
   // ── NEW: Themes, platforms, count ─────────────────────────────────
   const [selectedPlatforms, setSelectedPlatforms] = useState(["Instagram Reel", "TikTok Video"]);
-  const [conceptCount, setConceptCount]           = useState(10);
+  const [conceptCount, setConceptCount]           = useState(1);
   const [selectedTheme, setSelectedTheme]         = useState("default");
   const [themes, setThemes]                       = useState(() => loadThemes());
 
@@ -2573,7 +2573,7 @@ CRITICAL OUTPUT RULES:
                 🔢 How Many Concepts?
               </div>
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-                {[5, 10, 15, 20].map(n => (
+                {[1, 5, 10, 15, 20].map(n => (
                   <button
                     key={n}
                     onClick={() => setConceptCount(n)}
