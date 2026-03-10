@@ -14,6 +14,28 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%;overflow:hidden}
 #root{height:100%;background:#04060e}
+/* Pre-React splash — visible instantly, hidden once React mounts */
+#splash{
+  position:fixed;inset:0;background:#04060e;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:20px;z-index:99999;transition:opacity 0.3s ease;
+  font-family:'DM Sans',system-ui,sans-serif;
+}
+#splash.hidden{opacity:0;pointer-events:none;}
+.splash-logo{
+  width:64px;height:64px;border-radius:18px;
+  background:linear-gradient(135deg,#6366f1,#8b5cf6);
+  display:flex;align-items:center;justify-content:center;
+  font-size:28px;
+  box-shadow:0 0 40px rgba(99,102,241,0.45);
+  animation:splashGlow 2s ease infinite;
+}
+.splash-title{font-size:22px;font-weight:800;color:#f1f5f9;letter-spacing:-0.5px;}
+.splash-sub{font-size:13px;color:#374151;}
+.splash-bar{width:160px;height:3px;background:#0c1428;border-radius:3px;overflow:hidden;}
+.splash-fill{height:100%;background:linear-gradient(90deg,#6366f1,#8b5cf6);border-radius:3px;animation:splashFill 2.5s ease forwards;}
+@keyframes splashGlow{0%,100%{box-shadow:0 0 20px rgba(99,102,241,.4)}50%{box-shadow:0 0 50px rgba(99,102,241,.7)}}
+@keyframes splashFill{from{width:0}to{width:100%}}
 ::-webkit-scrollbar{width:4px;height:4px}
 ::-webkit-scrollbar-track{background:#04060e}
 ::-webkit-scrollbar-thumb{background:#1a2540;border-radius:3px}
@@ -46,6 +68,31 @@ a{color:inherit;text-decoration:none}
 </head>
 <body>
 <div id="root"></div>
+<div id="splash">
+  <div class="splash-logo">⚡</div>
+  <div>
+    <div class="splash-title">Flashcall Reel OS</div>
+    <div class="splash-sub" style="text-align:center;margin-top:6px">Loading workspace…</div>
+  </div>
+  <div class="splash-bar"><div class="splash-fill"></div></div>
+</div>
+<script>
+  // Hide splash once React has rendered something into #root
+  (function() {
+    var splash = document.getElementById('splash');
+    var observer = new MutationObserver(function() {
+      var root = document.getElementById('root');
+      if (root && root.children.length > 0) {
+        splash.classList.add('hidden');
+        setTimeout(function(){ splash.style.display='none'; }, 350);
+        observer.disconnect();
+      }
+    });
+    observer.observe(document.getElementById('root'), { childList: true, subtree: true });
+    // Fallback: hide after 8s no matter what
+    setTimeout(function(){ splash.style.display='none'; }, 8000);
+  })();
+</script>
 <script type="text/babel">
 /* ═══════════════════════════════════════════════════════════════════
    FLASHCALL REEL OS — Instagram Reels + TikTok Video Content Engine
