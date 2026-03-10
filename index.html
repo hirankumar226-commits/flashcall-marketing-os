@@ -5032,7 +5032,7 @@ function AdStudioPage() {
       setFrames(valid.map(f => ({ preview: "data:image/jpeg;base64," + f.b })));
       setLoadingMsg("Sending " + valid.length + " frames to Gemini Vision...");
       const titleBit = title ? " titled \"" + title + "\"" : "";
-      const prompt = "You are a UGC creative director. I have " + valid.length + " frame grabs from a viral video" + titleBit + " (thumbnail, early, middle, late). Extract the complete visual DNA to recreate it for Flashcall — a platform where fans book personal 1:1 calls with their favourite creator. Return ONLY valid JSON with these exact keys: scene, background_details, activity, lighting, camera_angle, color_grade, energy, hook_style, script_structure, pacing, creator_look, key_props, scene_image_prompt. scene_image_prompt must be a detailed Flux image generation prompt recreating the exact scene with a new AI creator in vertical 9:16 photorealistic UGC style.";
+      const prompt = "You are a UGC creative director. I have " + valid.length + " frame grabs from a viral video" + titleBit + " (thumbnail, early, middle, late). Extract the complete visual DNA to recreate it for Flashcall — a platform where fans book personal 1:1 calls with their favourite creator. Return ONLY valid JSON with these exact keys: scene, background_details, activity, lighting, camera_angle, color_grade, energy, hook_style, script_structure, pacing, creator_look, key_props, scene_image_prompt. For scene_image_prompt write a detailed image generation prompt that recreates the EXACT scene. Critical style rules for scene_image_prompt: shot on iPhone front camera, slightly soft focus, natural ambient room lighting only, casual handheld framing, slightly imperfect composition, ordinary lived-in home environment, unedited raw look, vertical 9:16. Do NOT use words like photorealistic, professional, studio, high quality, sharp, polished or cinematic. It must look like a real unedited TikTok or Instagram Reel self-recording, not a photoshoot.";
       const data = await gemini({
         contents: [{ parts: [...valid.map(f => ({ inline_data: { mime_type: "image/jpeg", data: f.b } })), { text: prompt }] }],
         generationConfig: { responseMimeType: "application/json" }
@@ -5053,7 +5053,7 @@ function AdStudioPage() {
     setGeneratedImage(null);
     try {
       setLoadingMsg("Placing your creator in the exact scene...");
-      const imgPrompt = (analysis.scene_image_prompt || "") + ". Creator: " + creatorDesc + ". Ultra photorealistic candid UGC, real home environment, vertical 9:16, looks like an Instagram Reel screenshot.";
+      const imgPrompt = (analysis.scene_image_prompt || "") + ". The person in this video looks exactly like this — follow this description precisely for their face, skin tone, hair, age, and outfit: " + creatorDesc + ". Style: shot on iPhone front camera, selfie angle, natural soft room lighting, slightly imperfect casual framing, real unedited TikTok self-recording aesthetic, no studio lighting, no professional photography, no filters, grainy natural texture, ordinary background, vertical 9:16. The creator appearance description above must be followed exactly — do not substitute a different ethnicity, age, hair color, or face.";
       let imgSrc = null;
       let imgErr = null;
       try {
