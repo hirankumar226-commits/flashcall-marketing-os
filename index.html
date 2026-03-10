@@ -606,6 +606,7 @@ async function callOpenAIText(systemPrompt, userPrompt, maxTokens = 8192) {
 }
 
 async function callClaudeText(systemPrompt, userPrompt, maxTokens = 8192) {
+  maxTokens = Math.min(maxTokens, 8192); // Haiku 4.5 max output
   const key = loadSettings().claudeApiKey;
   if (!key || !key.trim()) throw new Error("No Claude API key. Add it in ⚙️ Settings.");
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -5202,7 +5203,7 @@ function AdStudioPage() {
 
   const generateBrief = async () => {
     setError("");
-    if (!creatorDesc.trim()) return setError("Describe your creator first.");
+    // creatorDesc is optional — skip means Imagen uses the scene prompt alone
     setStep("generating");
     setGeneratedImage(null);
     try {
@@ -5354,7 +5355,10 @@ function AdStudioPage() {
           <h3 style={{ fontFamily:"'Bricolage Grotesque',sans-serif", fontSize:18, fontWeight:800, color:"#f1f5f9", margin:"0 0 14px" }}>Describe your creator</h3>
           <textarea placeholder="e.g. South Indian woman, mid-20s, natural makeup, dark wavy hair, warm smile, casual home outfit" value={creatorDesc} onChange={e => setCreatorDesc(e.target.value)} rows={3} style={{ ...S.input, resize:"none", lineHeight:1.7, marginBottom:14 }}/>
           {error && <div style={{ background:"rgba(239,68,68,0.07)", border:"1px solid rgba(239,68,68,0.2)", borderRadius:8, padding:"10px 14px", color:"#f87171", fontSize:13, marginBottom:14 }}>{error}</div>}
-          <button onClick={generateBrief} style={S.btnP}>Generate Scene + Script →</button>
+          <div style={{ display:"flex", gap:10 }}>
+            <button onClick={() => { setCreatorDesc(""); generateBrief(); }} style={{ ...S.btnG, flex:"0 0 auto", padding:"12px 18px", fontSize:13, color:"#4b5563", border:"1px solid #1a2540" }}>Skip →</button>
+            <button onClick={generateBrief} style={{ ...S.btnP, flex:1 }}>Generate Scene + Script →</button>
+          </div>
         </div>
       </div>
     );
