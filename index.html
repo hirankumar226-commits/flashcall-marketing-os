@@ -171,20 +171,72 @@ function niceDate(d) {
 }
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
-/* ── IMGBB UPLOAD (optional – for hosting character images) ───────── */
-async function uploadToImgBB(base64Data, apiKey) {
-  // Strip data URI prefix if present
-  const raw = base64Data.replace(/^data:[^;]+;base64,/, "");
-  const fd  = new FormData();
-  fd.append("image", raw);
-  const res = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(apiKey)}`, {
-    method: "POST",
-    body: fd,
-  });
-  if (!res.ok) throw new Error(`ImgBB upload failed: HTTP ${res.status}`);
-  const data = await res.json();
-  if (!data.success) throw new Error("ImgBB upload error: " + (data.error?.message || "unknown"));
-  return data.data.url; // permanent public URL
+/* ── AUTO IMAGE HOST ──────────────────────────────────────────────── */
+// Converts base64 data URI → Blob for file-based uploads (better CORS support)
+function base64ToBlob(base64Data) {
+  const [header, raw] = base64Data.split(",");
+  const mime = header.match(/:(.*?);/)?.[1] || "image/jpeg";
+  const binary = atob(raw);
+  const arr = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
+  return new Blob([arr], { type: mime });
+}
+
+// Tries ImgBB (user key) → Imgur anonymous → catbox.moe → error
+async function autoHostImage(base64Data) {
+  const s    = loadSettings();
+  const blob = base64ToBlob(base64Data);
+  const ext  = blob.type.split("/")[1] || "jpg";
+  const raw  = base64Data.replace(/^data:[^;]+;base64,/, "");
+
+  // 1. ImgBB — user's own key (most reliable, recommended)
+  if (s.imgbbApiKey?.trim()) {
+    try {
+      const fd = new FormData();
+      fd.append("image", blob, `character.${ext}`);
+      const res = await fetch(
+        `https://api.imgbb.com/1/upload?key=${encodeURIComponent(s.imgbbApiKey.trim())}`,
+        { method: "POST", body: fd }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) return data.data.url;
+      }
+    } catch (_) {}
+  }
+
+  // 2. Imgur anonymous — free, no key, CORS-friendly, permanent URLs
+  try {
+    const fd = new FormData();
+    fd.append("image", raw);          // base64 string (no data URI prefix)
+    fd.append("type", "base64");
+    const res = await fetch("https://api.imgur.com/3/image", {
+      method: "POST",
+      headers: { Authorization: "Client-ID 546c25a59c58ad7" },
+      body: fd,
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data?.link) return data.data.link;
+    }
+  } catch (_) {}
+
+  // 3. catbox.moe — reliable file host, permanent, no key
+  try {
+    const fd = new FormData();
+    fd.append("reqtype", "fileupload");
+    fd.append("userhash", "");        // anonymous
+    fd.append("fileToUpload", blob, `character.${ext}`);
+    const res = await fetch("https://catbox.moe/user/api.php", {
+      method: "POST", body: fd,
+    });
+    if (res.ok) {
+      const url = (await res.text()).trim();
+      if (url.startsWith("https://")) return url;
+    }
+  } catch (_) {}
+
+  throw new Error("Auto-hosting failed. Add a free ImgBB API key in ⚙️ Settings → AI (takes 30 seconds at imgbb.com).");
 }
 
 /* ── NANOBANANA VIDEO API ─────────────────────────────────────────── */
@@ -3577,93 +3629,97 @@ HOOK STYLES:
    CHARACTERS PAGE — Manage UGC actor characters
    ════════════════════════════════════════════════════════════════════ */
 function CharactersPage() {
-  const [chars, setChars]       = useState(() => loadCharacters());
-  const [showForm, setShowForm] = useState(false);
-  const [editing, setEditing]   = useState(null); // char being edited
-  const [toast, setToast]       = useState(null);
+  const [chars, setChars]         = useState(() => loadCharacters());
+  const [showForm, setShowForm]   = useState(false);
+  const [editing, setEditing]     = useState(null);
+  const [toast, setToast]         = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState(""); // feedback while hosting
 
-  // Form state
-  const [fName, setFName]           = useState("");
-  const [fDesc, setFDesc]           = useState("");
-  const [fPublicUrl, setFPublicUrl] = useState("");
-  const [fBase64, setFBase64]       = useState(""); // local preview
+  // Form fields
+  const [fName, setFName]         = useState("");
+  const [fDesc, setFDesc]         = useState("");
+  const [fBase64, setFBase64]     = useState("");
+  const [fPublicUrl, setFPublicUrl] = useState(""); // set automatically
   const [fIsDefault, setFIsDefault] = useState(false);
   const fileInputRef = useRef(null);
 
   function showToast(msg, type = "success") {
     setToast({ msg, type });
-    setTimeout(() => setToast(null), 3200);
+    setTimeout(() => setToast(null), 3500);
   }
 
   function openAdd() {
     setEditing(null);
-    setFName(""); setFDesc(""); setFPublicUrl(""); setFBase64("");
+    setFName(""); setFDesc(""); setFBase64(""); setFPublicUrl("");
     setFIsDefault(chars.length === 0);
+    setUploadStatus("");
     setShowForm(true);
   }
 
   function openEdit(c) {
     setEditing(c);
-    setFName(c.name); setFDesc(c.desc || ""); setFPublicUrl(c.publicUrl || "");
-    setFBase64(c.base64 || ""); setFIsDefault(!!c.isDefault);
+    setFName(c.name); setFDesc(c.desc || "");
+    setFBase64(c.base64 || ""); setFPublicUrl(c.publicUrl || "");
+    setFIsDefault(!!c.isDefault);
+    setUploadStatus(c.publicUrl ? "✓ Image hosted" : "");
     setShowForm(true);
   }
 
   function cancelForm() { setShowForm(false); setEditing(null); }
 
-  function handleImageFile(e) {
+  // When user picks a file: store locally + auto-host immediately
+  async function handleImageFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) { showToast("Please select an image file.", "error"); return; }
-    if (file.size > 5 * 1024 * 1024) { showToast("Image must be under 5MB.", "error"); return; }
+    if (file.size > 8 * 1024 * 1024) { showToast("Image must be under 8 MB.", "error"); return; }
+
+    // Read as base64 for preview
     const reader = new FileReader();
-    reader.onload = ev => setFBase64(ev.target.result);
+    reader.onload = async (ev) => {
+      const b64 = ev.target.result;
+      setFBase64(b64);
+      setFPublicUrl("");
+      setUploadStatus("⏳ Uploading image…");
+
+      try {
+        const url = await autoHostImage(b64);
+        setFPublicUrl(url);
+        setUploadStatus("✓ Image hosted and ready");
+      } catch (err) {
+        setUploadStatus("⚠️ Auto-hosting failed — " + err.message);
+      }
+    };
     reader.readAsDataURL(file);
   }
 
   async function saveChar() {
     if (!fName.trim()) { showToast("Name is required.", "error"); return; }
 
-    setUploading(true);
-    let finalPublicUrl = fPublicUrl.trim();
-
-    // Auto-upload to ImgBB if key present and we have a base64 but no URL
-    if (fBase64 && !finalPublicUrl) {
-      const s = loadSettings();
-      if (s.imgbbApiKey?.trim()) {
-        try {
-          showToast("Uploading image to ImgBB…");
-          finalPublicUrl = await uploadToImgBB(fBase64, s.imgbbApiKey.trim());
-        } catch (err) {
-          showToast("ImgBB upload failed: " + err.message + ". Add URL manually.", "error");
-          setUploading(false);
-          return;
-        }
-      }
+    // If image was selected but hosting is still in progress, block save
+    if (fBase64 && !fPublicUrl && uploadStatus.startsWith("⏳")) {
+      showToast("Still uploading image, please wait…", "error"); return;
     }
+
+    setUploading(true);
 
     const newChar = {
       id:        editing?.id || uid(),
       name:      fName.trim(),
       desc:      fDesc.trim(),
-      publicUrl: finalPublicUrl,
+      publicUrl: fPublicUrl,
       base64:    fBase64,
       isDefault: fIsDefault,
       createdAt: editing?.createdAt || new Date().toISOString(),
     };
 
-    let updated;
-    if (editing) {
-      updated = chars.map(c => c.id === editing.id ? newChar : c);
-    } else {
-      updated = [...chars, newChar];
-    }
+    let updated = editing
+      ? chars.map(c => c.id === editing.id ? newChar : c)
+      : [...chars, newChar];
 
     // Ensure only one default
-    if (fIsDefault) {
-      updated = updated.map(c => ({ ...c, isDefault: c.id === newChar.id }));
-    }
+    if (fIsDefault) updated = updated.map(c => ({ ...c, isDefault: c.id === newChar.id }));
 
     saveCharacters(updated);
     setChars(updated);
@@ -3688,6 +3744,10 @@ function CharactersPage() {
     showToast("Default character updated.");
   }
 
+  const hostOk     = fPublicUrl && uploadStatus.startsWith("✓");
+  const hostFailed = uploadStatus.startsWith("⚠️");
+  const hosting    = uploadStatus.startsWith("⏳");
+
   return (
     <div style={{ padding: 28, fontFamily: "'DM Sans', sans-serif", height: "100%", overflowY: "auto" }}>
       {toast && <Toast {...toast} />}
@@ -3698,7 +3758,7 @@ function CharactersPage() {
             UGC Characters
           </h1>
           <p style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
-            Upload and manage your UGC actor characters. These are used by Nanobanana to generate hyper-realistic videos.
+            Upload a photo — it's auto-hosted instantly and ready for Nanobanana video generation.
           </p>
         </div>
         <button
@@ -3714,17 +3774,6 @@ function CharactersPage() {
         </button>
       </div>
 
-      {/* ImgBB tip */}
-      {!loadSettings().imgbbApiKey && chars.length === 0 && (
-        <div style={{
-          background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.2)",
-          borderRadius: 10, padding: "14px 16px", marginBottom: 20, fontSize: 12, color: "#6366f1", lineHeight: 1.7,
-        }}>
-          💡 <strong>Tip:</strong> Add an ImgBB API key in ⚙️ Settings → AI to auto-host character images and get public URLs automatically.
-          Or paste any publicly accessible image URL (Google Drive, Dropbox, Cloudinary, etc.) when adding a character.
-        </div>
-      )}
-
       {/* Add/Edit Form */}
       {showForm && (
         <div style={{
@@ -3733,6 +3782,61 @@ function CharactersPage() {
         }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 18 }}>
             {editing ? "✏️ Edit Character" : "➕ Add New Character"}
+          </div>
+
+          {/* Image upload — big and prominent */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Character Photo
+            </label>
+
+            {/* Drop zone */}
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              style={{
+                border: `2px dashed ${hostOk ? "#10b981" : hostFailed ? "#ef4444" : hosting ? "#6366f1" : "#1a2540"}`,
+                borderRadius: 14, padding: "28px 20px",
+                background: hostOk ? "rgba(16,185,129,0.04)" : "#080b18",
+                cursor: "pointer", textAlign: "center",
+                transition: "all 0.2s",
+                display: "flex", flexDirection: "column", alignItems: "center", gap: 12,
+              }}>
+              {fBase64 ? (
+                <>
+                  <img
+                    src={fBase64} alt="preview"
+                    style={{ width: 100, height: 100, objectFit: "cover", borderRadius: 12, border: "2px solid #1a2540" }}
+                  />
+                  <div style={{ fontSize: 12, color: "#374151" }}>Click to change photo</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 42 }}>📸</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#94a3b8" }}>Click to upload photo</div>
+                  <div style={{ fontSize: 11, color: "#374151" }}>JPG, PNG, WEBP · max 8 MB</div>
+                </>
+              )}
+            </div>
+            <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageFile} style={{ display: "none" }}/>
+
+            {/* Upload status pill */}
+            {uploadStatus && (
+              <div style={{
+                marginTop: 10, fontSize: 12, fontWeight: 600,
+                color: hostOk ? "#10b981" : hostFailed ? "#ef4444" : "#818cf8",
+                display: "flex", alignItems: "center", gap: 6,
+              }}>
+                {hosting && <Spinner size={11}/>}
+                {uploadStatus}
+              </div>
+            )}
+            {hostFailed && (
+              <div style={{ marginTop: 6, fontSize: 11, color: "#374151", lineHeight: 1.65 }}>
+                💡 Get a free ImgBB key in 30 seconds:{" "}
+                <a href="https://api.imgbb.com" target="_blank" style={{ color: "#818cf8", textDecoration: "underline" }}>api.imgbb.com</a>
+                {" "}→ sign up → copy key → paste in ⚙️ Settings → AI.
+              </div>
+            )}
           </div>
 
           {/* Name */}
@@ -3750,60 +3854,9 @@ function CharactersPage() {
             <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>Character Description</label>
             <textarea
               rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)}
-              placeholder="e.g. 28-year-old career coach, warm and credible, works from a home office"
+              placeholder="e.g. 28-year-old career coach, warm and credible, home office background"
               style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, resize: "vertical" }}
             />
-          </div>
-
-          {/* Image upload */}
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>Character Image</label>
-            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
-              {/* Preview */}
-              <div style={{
-                width: 80, height: 80, borderRadius: 12, flexShrink: 0,
-                background: "#0a0d1c", border: "1px solid #1a2540",
-                overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
-                {fBase64
-                  ? <img src={fBase64} alt="preview" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
-                  : <span style={{ fontSize: 28 }}>👤</span>
-                }
-              </div>
-              <div style={{ flex: 1 }}>
-                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageFile} style={{ display: "none" }}/>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  style={{
-                    background: "#0b1020", border: "1px solid #1a2540", borderRadius: 8,
-                    padding: "8px 16px", color: "#94a3b8", fontSize: 12, cursor: "pointer", marginBottom: 8,
-                    display: "flex", alignItems: "center", gap: 6,
-                  }}>
-                  📁 Upload Image (stored locally for preview)
-                </button>
-                <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.6 }}>
-                  Upload for preview. For video generation, you need a public URL below.
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Public URL */}
-          <div style={{ marginBottom: 14 }}>
-            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
-              Public Image URL <span style={{ color: "#ef4444" }}>*required for video generation*</span>
-            </label>
-            <input
-              value={fPublicUrl} onChange={e => setFPublicUrl(e.target.value)}
-              placeholder="https://i.ibb.co/... or https://drive.google.com/..."
-              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace" }}
-            />
-            <div style={{ fontSize: 11, color: "#374151", marginTop: 4, lineHeight: 1.6 }}>
-              {loadSettings().imgbbApiKey
-                ? "✓ ImgBB key detected — auto-upload will happen if you leave this blank."
-                : "💡 Add ImgBB API key in Settings for auto-hosting, or paste a public URL from Google Drive, Cloudinary, Imgur, etc."
-              }
-            </div>
           </div>
 
           {/* Default toggle */}
@@ -3814,20 +3867,20 @@ function CharactersPage() {
               style={{ width: 16, height: 16, cursor: "pointer" }}
             />
             <label htmlFor="isDefaultChk" style={{ fontSize: 13, color: "#94a3b8", cursor: "pointer" }}>
-              Set as default character (auto-selected when generating videos)
+              Set as default character
             </label>
           </div>
 
           <div style={{ display: "flex", gap: 10 }}>
             <button
               onClick={saveChar}
-              disabled={uploading || !fName.trim()}
+              disabled={uploading || !fName.trim() || hosting}
               style={{
-                background: uploading || !fName.trim() ? "#111827" : "linear-gradient(135deg,#f59e0b,#f97316)",
+                background: uploading || !fName.trim() || hosting ? "#111827" : "linear-gradient(135deg,#f59e0b,#f97316)",
                 border: "none", borderRadius: 9, padding: "11px 24px",
-                color: uploading || !fName.trim() ? "#374151" : "white",
+                color: uploading || !fName.trim() || hosting ? "#374151" : "white",
                 fontSize: 13, fontWeight: 700,
-                cursor: uploading || !fName.trim() ? "not-allowed" : "pointer",
+                cursor: uploading || !fName.trim() || hosting ? "not-allowed" : "pointer",
                 display: "flex", alignItems: "center", gap: 8,
               }}>
               {uploading ? <><Spinner size={13}/> Saving…</> : (editing ? "✓ Update Character" : "✓ Add Character")}
@@ -3847,42 +3900,35 @@ function CharactersPage() {
           <div style={{ fontSize: 52, marginBottom: 16 }}>👥</div>
           <div style={{ fontSize: 16, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>No characters yet</div>
           <div style={{ fontSize: 13, maxWidth: 380, margin: "0 auto", lineHeight: 1.75 }}>
-            Add a UGC character to generate hyper-realistic videos with Nanobanana.
-            Each character is an AI actor persona with a reference photo.
+            Add a character — just upload a photo and we handle the rest. That character is then used by Nanobanana to generate hyper-realistic iPhone-style UGC videos.
           </div>
+          <button onClick={openAdd} style={{ marginTop: 20, background: "linear-gradient(135deg,#f59e0b,#f97316)", border: "none", borderRadius: 9, padding: "10px 22px", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+            + Add First Character
+          </button>
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
           {chars.map(c => (
-            <div
-              key={c.id}
-              className="hover-lift"
-              style={{
-                background: "#090d1b", border: `1px solid ${c.isDefault ? "rgba(245,158,11,0.3)" : "#0e1830"}`,
-                borderRadius: 14, overflow: "hidden",
-              }}>
-              {/* Image header */}
-              <div style={{
-                height: 140, background: "#0a0d1c", position: "relative",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                overflow: "hidden",
-              }}>
+            <div key={c.id} className="hover-lift" style={{
+              background: "#090d1b",
+              border: `1px solid ${c.isDefault ? "rgba(245,158,11,0.3)" : "#0e1830"}`,
+              borderRadius: 14, overflow: "hidden",
+            }}>
+              {/* Photo */}
+              <div style={{ height: 160, background: "#0a0d1c", position: "relative", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {c.base64 || c.publicUrl ? (
-                  <img
-                    src={c.base64 || c.publicUrl}
-                    alt={c.name}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                  />
+                  <img src={c.base64 || c.publicUrl} alt={c.name} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
                 ) : (
                   <span style={{ fontSize: 52, opacity: 0.3 }}>👤</span>
                 )}
                 {c.isDefault && (
-                  <div style={{
-                    position: "absolute", top: 10, right: 10,
-                    background: "rgba(245,158,11,0.9)", borderRadius: 20,
-                    padding: "2px 10px", fontSize: 10, fontWeight: 700, color: "#000",
-                  }}>
+                  <div style={{ position: "absolute", top: 10, right: 10, background: "rgba(245,158,11,0.9)", borderRadius: 20, padding: "2px 10px", fontSize: 10, fontWeight: 700, color: "#000" }}>
                     DEFAULT
+                  </div>
+                )}
+                {c.publicUrl && (
+                  <div style={{ position: "absolute", bottom: 8, left: 8, background: "rgba(16,185,129,0.85)", borderRadius: 20, padding: "2px 9px", fontSize: 9, fontWeight: 700, color: "#fff" }}>
+                    ✓ HOSTED
                   </div>
                 )}
               </div>
@@ -3890,29 +3936,18 @@ function CharactersPage() {
               {/* Info */}
               <div style={{ padding: "14px 16px" }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>{c.name}</div>
-                {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 8, lineHeight: 1.55 }}>{c.desc}</div>}
-                {c.publicUrl ? (
-                  <div style={{ fontSize: 10, color: "#10b981", marginBottom: 10 }}>✓ Public URL ready for video gen</div>
-                ) : (
-                  <div style={{ fontSize: 10, color: "#ef4444", marginBottom: 10 }}>⚠️ No public URL — can't generate video yet</div>
-                )}
+                {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 10, lineHeight: 1.55 }}>{c.desc}</div>}
 
                 <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-                  <button
-                    onClick={() => openEdit(c)}
-                    style={{ background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 12px", color: "#94a3b8", fontSize: 11, cursor: "pointer" }}>
+                  <button onClick={() => openEdit(c)} style={{ background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 12px", color: "#94a3b8", fontSize: 11, cursor: "pointer" }}>
                     ✏️ Edit
                   </button>
                   {!c.isDefault && (
-                    <button
-                      onClick={() => setDefault(c.id)}
-                      style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 7, padding: "6px 12px", color: "#fbbf24", fontSize: 11, cursor: "pointer" }}>
+                    <button onClick={() => setDefault(c.id)} style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 7, padding: "6px 12px", color: "#fbbf24", fontSize: 11, cursor: "pointer" }}>
                       ⭐ Set Default
                     </button>
                   )}
-                  <button
-                    onClick={() => deleteChar(c.id)}
-                    style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 7, padding: "6px 10px", color: "#f87171", fontSize: 11, cursor: "pointer", marginLeft: "auto" }}>
+                  <button onClick={() => deleteChar(c.id)} style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 7, padding: "6px 10px", color: "#f87171", fontSize: 11, cursor: "pointer", marginLeft: "auto" }}>
                     🗑
                   </button>
                 </div>
