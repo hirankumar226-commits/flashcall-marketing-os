@@ -178,53 +178,68 @@ function extractJSONArray(rawText) {
   // Find the outermost [ ... ]
   const start = t.indexOf("[");
   const end   = t.lastIndexOf("]");
-  if (start === -1 || end === -1 || end <= start) {
-    throw new Error("AI response did not contain a JSON array. Raw preview: " + t.slice(0, 120));
-  }
-  t = t.slice(start, end + 1);
+  if (start === -1) throw new Error("AI response did not contain a JSON array. Raw preview: " + t.slice(0, 120));
+
+  // If no closing bracket (truncated response), try to close it
+  let jsonStr = end > start ? t.slice(start, end + 1) : t.slice(start);
 
   // Fix: replace raw control characters inside JSON strings (common Gemini issue)
-  let out = "";
-  let inString = false;
-  let i = 0;
-  while (i < t.length) {
-    const ch = t[i];
-    // Handle escape sequences
-    if (inString && ch === "\\") {
-      out += ch;
+  function fixControlChars(src) {
+    let out = ""; let inString = false; let i = 0;
+    while (i < src.length) {
+      const ch = src[i];
+      if (inString && ch === "\\") { out += ch; i++; if (i < src.length) { out += src[i]; i++; } continue; }
+      if (ch === '"') { inString = !inString; out += ch; i++; continue; }
+      if (inString) {
+        const code = ch.charCodeAt(0);
+        if (code < 0x20) {
+          if (code === 10) out += "\\n"; else if (code === 13) out += "\\r"; else if (code === 9) out += "\\t"; else out += " ";
+        } else { out += ch; }
+      } else { out += ch; }
       i++;
-      if (i < t.length) { out += t[i]; i++; }
-      continue;
     }
-    // Toggle string state on unescaped quotes
-    if (ch === '"') {
-      inString = !inString;
-      out += ch;
-      i++;
-      continue;
-    }
-    // Inside a string: escape raw control characters
-    if (inString) {
-      const code = ch.charCodeAt(0);
-      if (code < 0x20) {
-        if      (code === 10) out += "\\n";
-        else if (code === 13) out += "\\r";
-        else if (code === 9)  out += "\\t";
-        else                  out += " ";
-      } else {
-        out += ch;
-      }
-    } else {
-      out += ch;
-    }
-    i++;
+    return out;
   }
 
-  // Attempt parse
-  try { return JSON.parse(out); } catch (_) {}
-  try { return JSON.parse(t); }   catch (e) {
-    throw new Error("JSON parse failed: " + e.message + " | Preview: " + t.slice(0, 150));
+  const fixed = fixControlChars(jsonStr);
+
+  // 1. Try clean parse
+  try { const r = JSON.parse(fixed); if (Array.isArray(r)) return r; } catch (_) {}
+  try { const r = JSON.parse(jsonStr); if (Array.isArray(r)) return r; } catch (_) {}
+
+  // 2. Response may be truncated — try to recover complete objects from partial array
+  // Strategy: extract all complete {...} objects within the array
+  function extractCompleteObjects(src) {
+    const results = [];
+    let depth = 0; let objStart = -1; let inStr = false;
+    for (let i = 0; i < src.length; i++) {
+      const ch = src[i];
+      // Track strings
+      if (ch === '"' && (i === 0 || src[i-1] !== '\\')) { inStr = !inStr; }
+      if (inStr) continue;
+      if (ch === '{') {
+        if (depth === 0) objStart = i;
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0 && objStart !== -1) {
+          const candidate = src.slice(objStart, i + 1);
+          const candidateFixed = fixControlChars(candidate);
+          try {
+            const parsed = JSON.parse(candidateFixed);
+            if (parsed && typeof parsed === "object") results.push(parsed);
+          } catch (_) {}
+          objStart = -1;
+        }
+      }
+    }
+    return results;
   }
+
+  const recovered = extractCompleteObjects(fixed.length > jsonStr.length ? fixed : jsonStr);
+  if (recovered.length > 0) return recovered;
+
+  throw new Error("JSON parse failed — AI response may have been truncated. Please try again.");
 }
 
 /* ── BRAND CONTEXT BUILDER ────────────────────────────────────────── */
@@ -1410,64 +1425,79 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     setProgress("Building concepts from viral analysis…");
 
     try {
-      const history = loadHistory();
-      const prevList = history.slice(0, 50).map((h, i) =>
-        `${i + 1}. [${h.platform}] "${h.title}" — Hook: "${h.hook}"`
-      ).join("\n") || "None";
+      // ── SAFE STRING HELPER ──────────────────────────────────────────
+      // Strips characters that break prompt injection: quotes, backticks,
+      // raw newlines (replaced with space), pipe chars. Truncates to maxLen.
+      function safe(val, maxLen = 180) {
+        if (!val) return "";
+        return String(val)
+          .replace(/["`]/g, "'")          // replace double-quotes & backticks
+          .replace(/[\r\n]+/g, " ")       // flatten newlines to space
+          .replace(/\s{2,}/g, " ")        // collapse multiple spaces
+          .trim()
+          .slice(0, maxLen);
+      }
+      function safeList(arr, maxItems = 4, maxLen = 140) {
+        if (!Array.isArray(arr)) return "";
+        return arr.slice(0, maxItems).map(x => safe(x, maxLen)).join("; ");
+      }
 
-      const viralInsights = [
-        analysis.hook?.description && `HOOK PATTERN: ${analysis.hook.description}`,
-        analysis.hook?.psychologicalTrigger && `PSYCHOLOGICAL TRIGGER: ${analysis.hook.psychologicalTrigger}`,
-        analysis.hook?.whyItWorks && `WHY IT WORKS: ${analysis.hook.whyItWorks}`,
-        Array.isArray(analysis.visualTechniques) && `VISUAL TECHNIQUES: ${analysis.visualTechniques.join(" | ")}`,
-        analysis.audioChoices?.analysis && `AUDIO APPROACH: ${analysis.audioChoices.analysis}`,
-        analysis.pacingAndEditing?.analysis && `PACING: ${analysis.pacingAndEditing.analysis}`,
-        Array.isArray(analysis.emotionalDrivers) && `EMOTIONAL DRIVERS: ${analysis.emotionalDrivers.join(" | ")}`,
-        Array.isArray(analysis.rewatchabilityTriggers) && `REWATCH TRIGGERS: ${analysis.rewatchabilityTriggers.join(" | ")}`,
-        Array.isArray(analysis.viralSummary) && `TOP VIRAL REASONS:\n${analysis.viralSummary.map((r,i) => `  ${i+1}. ${r}`).join("\n")}`,
-      ].filter(Boolean).join("\n\n");
+      // ── BUILD CLEAN VIRAL INSIGHT BLOCK ────────────────────────────
+      const insights = [
+        analysis.hook?.psychologicalTrigger && `Hook trigger: ${safe(analysis.hook.psychologicalTrigger, 100)}`,
+        analysis.hook?.description          && `Hook pattern: ${safe(analysis.hook.description, 150)}`,
+        analysis.hook?.whyItWorks           && `Why it works: ${safe(analysis.hook.whyItWorks, 150)}`,
+        analysis.visualTechniques?.length   && `Visuals: ${safeList(analysis.visualTechniques, 3)}`,
+        analysis.audioChoices?.analysis     && `Audio: ${safe(analysis.audioChoices.analysis, 130)}`,
+        analysis.pacingAndEditing?.analysis && `Pacing: ${safe(analysis.pacingAndEditing.analysis, 130)}`,
+        analysis.emotionalDrivers?.length   && `Emotions: ${safeList(analysis.emotionalDrivers, 3)}`,
+        analysis.rewatchabilityTriggers?.length && `Rewatch: ${safeList(analysis.rewatchabilityTriggers, 3)}`,
+        analysis.viralSummary?.length && `Top viral reasons: ${safeList(analysis.viralSummary, 5, 120)}`,
+      ].filter(Boolean).join("\n");
+
+      // ── HISTORY — limit to 20 items to keep prompt short ───────────
+      const history  = loadHistory();
+      const prevList = history.slice(0, 20)
+        .map((h, i) => `${i + 1}. [${safe(h.platform, 20)}] ${safe(h.title, 60)}`)
+        .join("\n") || "None";
 
       setProgress("Generating 10 inspired concepts…");
 
-      const userPrompt = `Generate EXACTLY 10 unique short-form video concepts for ${loadSettings().productName || "our brand"}.
+      const userPrompt = `Generate EXACTLY 10 unique short-form video concepts for ${safe(loadSettings().productName || "our brand", 40)}.
 Distribution: 5 Instagram Reels + 5 TikTok Videos.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-INSPIRATION: VIRAL VIDEO ANALYSIS
-Adapt these proven viral mechanics for our brand. Do NOT copy — use the patterns.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-${viralInsights}
+VIRAL MECHANICS TO ADAPT (do not copy - use the patterns for our brand):
+${insights}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-PREVIOUSLY USED — DO NOT REPEAT:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREVIOUSLY USED CONCEPTS - DO NOT REPEAT:
 ${prevList}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ANGLE VARIETY (one per concept):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ANGLE VARIETY - use one per concept in this order:
 1: hot take  2: personal story  3: myth-busting  4: step-by-step how-to  5: behind-the-scenes
-6: data / stats revelation  7: POV storytelling  8: before vs after  9: nobody talks about this  10: trend reaction
+6: data/stats revelation  7: POV storytelling  8: before vs after  9: nobody talks about this  10: trend reaction
 
-Use the viral mechanics from the analysis to inform the hook style, pacing, emotional trigger, and visual approach for each concept.
+CRITICAL OUTPUT RULES:
+- Return ONLY a valid JSON array. Nothing else. No markdown. No explanation.
+- All string values must be plain text only - no quotes inside strings, no special characters.
+- Keep scripts concise - body max 200 words.
+- The array must have exactly 10 complete objects.
 
-OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fences.
 [
   {
     "platform": "Instagram Reel",
     "title": "short internal title",
-    "angle": "angle name from list above",
-    "pillar": "Success Stories | Education | Platform Tips | Industry Insights | Social Proof",
-    "hook": "spoken hook sentence (0-3s, max 10 words)",
-    "hookOnScreen": "3-5 word bold text overlay",
+    "angle": "angle name",
+    "pillar": "Education",
+    "hook": "spoken hook sentence max 10 words",
+    "hookOnScreen": "3-5 word screen text",
     "script": {
-      "hook": "full 0-3s script",
-      "body": "full 3-45s script with [visual cues]",
-      "cta": "full 45-60s CTA"
+      "hook": "0-3s spoken script",
+      "body": "3-45s script with visual cues in brackets",
+      "cta": "45-60s CTA script"
     },
-    "visualStyle": "talking head | POV | walk-and-talk | text-on-screen | B-roll with VO",
-    "audioSuggestion": "audio style inspired by the analyzed video",
-    "hashtags": "10-14 hashtags"
+    "visualStyle": "talking head",
+    "audioSuggestion": "audio style description",
+    "hashtags": "#tag1 #tag2 #tag3"
   }
 ]`;
 
