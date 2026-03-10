@@ -4949,8 +4949,9 @@ function VideoJobsPage() {
    AD STUDIO PAGE — Viral video cloning for Flashcall UGC ads
    ════════════════════════════════════════════════════════════════════ */
 function AdStudioPage() {
-  const [step, setStep]               = useState("setup");   // setup | analyzing | dna | generating | brief
+  const [step, setStep]               = useState("setup");
   const [videoUrl, setVideoUrl]       = useState("");
+  const [frames, setFrames]           = useState([]);
   const [analysis, setAnalysis]       = useState(null);
   const [creatorDesc, setCreatorDesc] = useState("");
   const [generatedImage, setGeneratedImage] = useState(null);
@@ -4961,8 +4962,9 @@ function AdStudioPage() {
   const [copied, setCopied]           = useState("");
   const tickerRef = useRef(null);
 
-  // Pull Gemini key from existing app settings — no separate input needed
   const apiKey = loadSettings().geminiApiKey?.trim() || "";
+  // Use the exact same model the rest of the app uses — already confirmed working
+  const MODEL  = "gemini-2.5-flash";
 
   useEffect(() => {
     if (step === "analyzing" || step === "generating") {
@@ -4974,89 +4976,123 @@ function AdStudioPage() {
     return () => clearInterval(tickerRef.current);
   }, [step]);
 
-  // Try a prioritised list of models — stops at the first that succeeds
-  const VISION_MODELS = [
-    "gemini-2.5-pro-exp-03-25",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-  ];
-  const TEXT_MODELS = [
-    "gemini-2.0-flash-lite",
-    "gemini-2.5-pro-exp-03-25",
-    "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
-  ];
-
-  const gemini = async (model, body) => {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
-    );
-    const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
-    if (!data.candidates?.[0]?.content?.parts?.[0]) throw new Error("Empty response from Gemini");
-    return data;
+  const extractVideoId = (url) => {
+    const patterns = [
+      /youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/watch\?v=([a-zA-Z0-9_-]{11})/,
+      /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+      /youtube\.com\/embed\/([a-zA-Z0-9_-]{11})/,
+    ];
+    for (const p of patterns) {
+      const m = url.match(p);
+      if (m) return m[1];
+    }
+    return null;
   };
 
-  const geminiWithFallback = async (models, body) => {
-    let lastErr = null;
-    for (const model of models) {
-      try {
-        return await gemini(model, body);
-      } catch (e) {
-        // If model not found / deprecated, try next. Otherwise rethrow immediately.
-        if (e.message && (e.message.includes("no longer available") || e.message.includes("not found") || e.message.includes("deprecated") || e.message.includes("404"))) {
-          lastErr = e;
-          continue;
-        }
-        throw e;
-      }
+  const fetchFrameAsBase64 = async (imgUrl) => {
+    try {
+      const res = await fetch(imgUrl);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(",")[1]);
+        reader.readAsDataURL(blob);
+      });
+    } catch (_) { return null; }
+  };
+
+  const fetchTitle = async (url) => {
+    try {
+      const res = await fetch("https://www.youtube.com/oembed?url=" + encodeURIComponent(url) + "&format=json");
+      if (!res.ok) return "";
+      const d = await res.json();
+      return d.title || "";
+    } catch (_) { return ""; }
+  };
+
+  const geminiCall = async (body) => {
+    const url = "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + apiKey;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    if (!data.candidates || !data.candidates[0] || !data.candidates[0].content || !data.candidates[0].content.parts || !data.candidates[0].content.parts[0]) {
+      throw new Error("Empty response from Gemini");
     }
-    throw lastErr;
+    return data;
   };
 
   const analyzeVideo = async () => {
     setError("");
     if (!apiKey) return setError("No Gemini API key found — add it in Settings first.");
-    if (!videoUrl.trim()) return setError("Paste a YouTube Shorts URL to continue.");
-    // Validate YouTube URL
-    const trimmedUrl = videoUrl.trim();
-    const isYouTube = trimmedUrl.includes("youtube.com") || trimmedUrl.includes("youtu.be");
-    if (!isYouTube) return setError("Only YouTube Shorts links are supported right now. For Instagram or TikTok reels, download the video — upload support is coming soon.");
+    if (!videoUrl.trim()) return setError("Paste a YouTube URL first.");
+    const videoId = extractVideoId(videoUrl.trim());
+    if (!videoId) return setError("Could not read the video ID — make sure it is a valid YouTube or YouTube Shorts URL.");
+
     setStep("analyzing");
-    setLoadingMsg("Watching the video and reading every visual detail...");
+    setLoadingMsg("Grabbing 4 frames from the video...");
+
     try {
-      const data = await geminiWithFallback(VISION_MODELS, {
-        contents: [{
-          parts: [
-            { file_data: { mime_type: "video/mp4", file_uri: trimmedUrl } },
-            { text: `You are a UGC creative director. Deeply analyze this viral video to extract its complete visual DNA so we can perfectly recreate it with a different creator for Flashcall (a platform where fans book personal 1:1 calls with creators). Return ONLY valid JSON, no extra text:
+      const frameUrls = [
+        "https://img.youtube.com/vi/" + videoId + "/maxresdefault.jpg",
+        "https://img.youtube.com/vi/" + videoId + "/1.jpg",
+        "https://img.youtube.com/vi/" + videoId + "/2.jpg",
+        "https://img.youtube.com/vi/" + videoId + "/3.jpg",
+      ];
+
+      const [titleResult, ...base64Results] = await Promise.all([
+        fetchTitle(videoUrl.trim()),
+        ...frameUrls.map(fetchFrameAsBase64),
+      ]);
+
+      const validFrames = frameUrls
+        .map((url, i) => ({ url, base64: base64Results[i] }))
+        .filter(f => f.base64);
+
+      if (validFrames.length === 0) throw new Error("Could not fetch any frames from this video. Make sure the URL is a public YouTube video.");
+
+      setFrames(validFrames.map(f => ({ url: f.url, preview: "data:image/jpeg;base64," + f.base64 })));
+      setLoadingMsg("Sending " + validFrames.length + " frames to Gemini Vision...");
+
+      const imageParts = validFrames.map(f => ({
+        inline_data: { mime_type: "image/jpeg", data: f.base64 }
+      }));
+
+      const titleText = titleResult ? ' titled "' + titleResult + '"' : "";
+      const prompt = "You are a UGC creative director. I am giving you " + validFrames.length + " frame grabs from a viral video" + titleText + ". The frames are in order: thumbnail, early, middle, late. Analyze across ALL frames to extract the complete visual DNA so we can recreate this video with a new creator for Flashcall (a platform where fans book personal 1:1 calls with their favourite creator). Return ONLY valid JSON, no markdown or backticks:
 
 {
   "scene": "full description of the location and environment",
   "background_details": "every visible background element — furniture, colors, decor, objects, textures",
-  "activity": "precisely what the creator is physically doing throughout the video",
-  "lighting": "type, warmth, direction, quality of light in the scene",
-  "camera_angle": "shot distance, angle, any camera movement",
-  "color_grade": "color temperature, saturation, contrast, visual feel",
-  "energy": "overall vibe in 4-5 descriptive words",
-  "hook_style": "how exactly the first 3 seconds grab attention",
-  "script_structure": "how the content flows and is organized",
-  "pacing": "editing rhythm, cut frequency, tempo",
-  "creator_look": "outfit, hair, makeup, general aesthetic",
+  "activity": "precisely what the creator is physically doing — how it changes across the video",
+  "lighting": "type, warmth, direction, quality of light",
+  "camera_angle": "shot distance, angle, any camera movement noticed across frames",
+  "color_grade": "color temperature, saturation, contrast, overall visual feel",
+  "energy": "overall vibe in 4-5 words",
+  "hook_style": "based on the early frame — how the video grabs attention in the first 3 seconds",
+  "script_structure": "how the content likely flows based on what you see across all frames",
+  "pacing": "estimated editing rhythm and tempo",
+  "creator_look": "outfit, hair, makeup, general aesthetic of the person",
   "key_props": "important objects the creator uses, holds, or interacts with",
-  "scene_image_prompt": "A highly detailed image generation prompt to recreate this EXACT scene with a new AI creator. Include: specific room type, all background details with colors and objects, exact activity and pose, lighting quality and direction, camera framing, color mood, photorealistic UGC style, looks like a real Instagram or TikTok still frame, vertical 9:16 composition. Be extremely specific."
-}` }
-          ]
-        }],
+  "scene_image_prompt": "A highly detailed Flux/Imagen image generation prompt to recreate this EXACT scene with a new AI creator. Include: specific room type, all background details with colors and objects, exact activity and pose, lighting quality and direction, camera framing, color mood, photorealistic UGC style, looks like a real Instagram Reel or TikTok still frame, vertical 9:16 composition. Be extremely specific."
+}";
+
+      const data = await geminiCall({
+        contents: [{ parts: [...imageParts, { text: prompt }] }],
         generationConfig: { responseMimeType: "application/json" }
       });
-      const parsed = JSON.parse(data.candidates[0].content.parts[0].text);
+
+      const raw = data.candidates[0].content.parts[0].text;
+      const parsed = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setAnalysis(parsed);
       setStep("dna");
     } catch (err) {
-      setError("Analysis failed: " + err.message + " — Make sure it's a valid YouTube Shorts URL.");
+      setError("Analysis failed: " + err.message);
       setStep("setup");
     }
   };
@@ -5067,34 +5103,32 @@ function AdStudioPage() {
     setStep("generating");
     try {
       setLoadingMsg("Placing your creator in the exact scene...");
-      const imagePrompt = `${analysis.scene_image_prompt}. The creator looks like this: ${creatorDesc}. Ultra photorealistic, authentic candid UGC content, not staged, real home environment, looks exactly like a raw Instagram Reel or TikTok screenshot, natural and unposed`;
+      const imagePrompt = analysis.scene_image_prompt + ". The creator looks like this: " + creatorDesc + ". Ultra photorealistic, authentic candid UGC content, not staged, real home environment, looks exactly like a raw Instagram Reel or TikTok screenshot, natural and unposed";
 
       let imgSrc = null;
 
-      // ── Try Imagen 3 first (Gemini API) ────────────────────────────
+      // Try Imagen 3 first
       try {
-        const imgRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=${apiKey}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              instances:  [{ prompt: imagePrompt }],
-              parameters: { sampleCount: 1, aspectRatio: "9:16", personGeneration: "allow_adult" }
-            })
-          }
-        );
+        const imgUrl = "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key=" + apiKey;
+        const imgRes = await fetch(imgUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            instances:  [{ prompt: imagePrompt }],
+            parameters: { sampleCount: 1, aspectRatio: "9:16", personGeneration: "allow_adult" }
+          })
+        });
         const imgData = await imgRes.json();
-        if (imgData.predictions?.[0]?.bytesBase64Encoded) {
-          imgSrc = `data:image/png;base64,${imgData.predictions[0].bytesBase64Encoded}`;
+        if (imgData.predictions && imgData.predictions[0] && imgData.predictions[0].bytesBase64Encoded) {
+          imgSrc = "data:image/png;base64," + imgData.predictions[0].bytesBase64Encoded;
         }
       } catch (_) {}
 
-      // ── Fallback: Pollinations via fetch → base64 (avoids CORS on img src) ──
+      // Fallback: Pollinations fetched as base64 (avoids CORS issues with direct img src)
       if (!imgSrc) {
         try {
           const seed = Date.now();
-          const polUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=540&height=960&nologo=true&model=flux&seed=${seed}&nofeed=true`;
+          const polUrl = "https://image.pollinations.ai/prompt/" + encodeURIComponent(imagePrompt) + "?width=540&height=960&nologo=true&model=flux&seed=" + seed + "&nofeed=true";
           const polRes = await fetch(polUrl);
           if (polRes.ok) {
             const blob = await polRes.blob();
@@ -5107,49 +5141,45 @@ function AdStudioPage() {
         } catch (_) {}
       }
 
-      // ── Last resort: use direct URL (may flicker but better than nothing) ──
-      if (!imgSrc) {
-        imgSrc = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=540&height=960&nologo=true&model=flux&seed=${Date.now()}`;
-      }
-
-      setGeneratedImage(imgSrc);
-
+      setGeneratedImage(imgSrc || "");
       setLoadingMsg("Writing the Flashcall script...");
-      const scriptRes = await geminiCall({
-        contents: [{
-          parts: [{ text: `You are a top UGC scriptwriter for Flashcall — a platform where fans book personal 1:1 video or audio calls with their favorite creator.
 
-Reference video DNA:
-- Activity the creator is doing: ${analysis.activity}
-- Scene: ${analysis.scene}
-- Energy/vibe: ${analysis.energy}
-- Hook style: ${analysis.hook_style}
-- Script structure: ${analysis.script_structure}
-- Key props: ${analysis.key_props}
-- Pacing: ${analysis.pacing}
+      const scriptPrompt = "You are a top UGC scriptwriter for Flashcall — a platform where fans book personal 1:1 video or audio calls with their favourite creator.
+
+Reference video visual DNA:
+- Activity: " + analysis.activity + "
+- Scene: " + analysis.scene + "
+- Energy: " + analysis.energy + "
+- Hook style: " + analysis.hook_style + "
+- Script structure: " + analysis.script_structure + "
+- Key props: " + analysis.key_props + "
+- Pacing: " + analysis.pacing + "
 
 Write a 60-second UGC ad script. RULES:
-1. Creator stays in the SAME physical activity (${analysis.activity}) throughout — non-negotiable
-2. Flashcall is woven in naturally while she's doing her thing — not a hard sell
-3. The hook EXACTLY mirrors the reference hook style and energy
+1. Creator stays in the SAME physical activity throughout
+2. Flashcall is woven in naturally — not a hard sell
+3. Hook EXACTLY mirrors the reference hook style and energy
 4. Must feel completely real and unscripted
-5. The appeal is personal access — her fans getting real one-on-one time with her
-6. Never say "audience" — say fans, followers, or just "you"
-7. Product placement must feel effortless, like she just happened to mention it
+5. The appeal is personal access — fans getting real one-on-one time with her
+6. Never say 'audience' — say fans, followers, or just 'you'
+7. Product placement must feel effortless
 
-Return ONLY valid JSON, no extra text:
+Return ONLY valid JSON, no markdown:
 {
-  "hook": "exact opening words — 3-4 seconds, matches reference hook pattern",
+  "hook": "exact opening words — 3-4 seconds",
   "full_script": "complete 60-second script. Stage directions in [brackets]. Natural pauses as ...",
-  "text_overlays": ["bold overlay text 1", "bold overlay text 2", "bold overlay text 3", "bold overlay text 4"],
-  "caption": "casual Instagram/TikTok caption with emojis and 5-6 hashtags — written like a real creator",
+  "text_overlays": ["overlay 1", "overlay 2", "overlay 3", "overlay 4"],
+  "caption": "casual Instagram/TikTok caption with emojis and hashtags — written like a real creator",
   "cta": "the very last line — call to action"
-}` }]
-        }],
+}";
+
+      const scriptRes = await geminiCall({
+        contents: [{ parts: [{ text: scriptPrompt }] }],
         generationConfig: { responseMimeType: "application/json" }
       });
 
-      const parsedScript = JSON.parse(scriptRes.candidates[0].content.parts[0].text);
+      const raw = scriptRes.candidates[0].content.parts[0].text;
+      const parsedScript = JSON.parse(raw.replace(/```json|```/g, "").trim());
       setScript(parsedScript);
       setStep("brief");
     } catch (err) {
@@ -5160,7 +5190,7 @@ Return ONLY valid JSON, no extra text:
 
   const copyText = (text, key) => {
     if (!text) return;
-    navigator.clipboard?.writeText(text);
+    navigator.clipboard && navigator.clipboard.writeText(text);
     setCopied(key);
     setTimeout(() => setCopied(""), 2000);
   };
@@ -5173,36 +5203,29 @@ Return ONLY valid JSON, no extra text:
       fontSize: 14, outline: "none", fontFamily: "'DM Sans', sans-serif",
       transition: "border-color 0.2s",
     },
-    card: {
-      background: "#08090f", border: "1px solid #0c1428",
-      borderRadius: 16, padding: "22px 24px",
-    },
-    pill: (color) => ({
+    card: { background: "#08090f", border: "1px solid #0c1428", borderRadius: 16, padding: "22px 24px" },
+    pill: function(color) { return {
       display: "inline-flex", alignItems: "center", gap: 6,
-      background: `${color}12`, border: `1px solid ${color}25`,
+      background: color + "12", border: "1px solid " + color + "25",
       borderRadius: 100, padding: "4px 12px",
       color: color, fontSize: 10, fontWeight: 600, letterSpacing: "0.1em",
-    }),
+    }; },
     btnPrimary: {
       background: "linear-gradient(135deg, #ff1f6a, #bf1550)",
       border: "none", borderRadius: 10, padding: "12px 20px",
-      color: "#fff", fontSize: 14, fontWeight: 700,
-      cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
-      boxShadow: "0 4px 20px rgba(255,31,106,0.25)",
+      color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer",
+      fontFamily: "'DM Sans', sans-serif", boxShadow: "0 4px 20px rgba(255,31,106,0.25)",
       width: "100%", transition: "opacity 0.15s",
     },
     btnGhost: {
-      background: "#08090f", border: "1px solid #0c1428",
-      borderRadius: 8, padding: "8px 14px",
-      color: "#4b5563", fontSize: 12, fontWeight: 500,
-      cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
-      transition: "all 0.15s",
+      background: "#08090f", border: "1px solid #0c1428", borderRadius: 8,
+      padding: "8px 14px", color: "#4b5563", fontSize: 12, fontWeight: 500,
+      cursor: "pointer", fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s",
     },
   };
 
-  // ── Setup screen ─────────────────────────────────────────────────
   if (step === "setup") return (
-    <div style={{ minHeight: "100vh", padding: "48px 32px", maxWidth: 520, margin: "0 auto" }}>
+    <div style={{ minHeight: "100vh", padding: "48px 32px", maxWidth: 540, margin: "0 auto" }}>
       <div style={{ marginBottom: 32 }}>
         <div style={{ ...S.pill("#ff1f6a"), marginBottom: 18 }}>
           <span style={{ width: 6, height: 6, background: "#ff1f6a", borderRadius: "50%", display: "inline-block", animation: "pulse 2s infinite" }}/>
@@ -5213,50 +5236,47 @@ Return ONLY valid JSON, no extra text:
           <span style={{ color: "#ff1f6a" }}>Make it Flashcall.</span>
         </h1>
         <p style={{ color: "#374151", fontSize: 14, lineHeight: 1.7, margin: 0 }}>
-          Drop a viral YouTube Shorts link — Gemini reads the video, extracts the visual DNA (scene, background, activity, lighting, pacing), then places your creator in the exact same world with a Flashcall script.
+          Paste a YouTube URL — we auto-grab 4 frames across the video and send them all to Gemini Vision. Full scene, background, lighting, activity extracted automatically.
         </p>
       </div>
 
       {!apiKey && (
         <div style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 10, padding: "10px 14px", color: "#f59e0b", fontSize: 13, marginBottom: 20, lineHeight: 1.55 }}>
-          ⚠ No Gemini API key found. Add it in <strong>Settings → AI Keys → Gemini API Key</strong> first.
+          No Gemini API key found. Add it in <strong>Settings</strong> first.
         </div>
       )}
 
       <div style={S.card}>
         <label style={{ fontSize: 10, color: "#374151", display: "block", marginBottom: 8, textTransform: "uppercase", letterSpacing: "1px" }}>
-          Viral Video URL (YouTube Shorts)
+          YouTube / YouTube Shorts URL
         </label>
         <input
           type="url"
           placeholder="https://www.youtube.com/shorts/..."
           value={videoUrl}
-          onChange={e => setVideoUrl(e.target.value)}
+          onChange={e => { setVideoUrl(e.target.value); setError(""); }}
           onKeyDown={e => e.key === "Enter" && analyzeVideo()}
           style={S.input}
         />
         <p style={{ color: "#1e2d4a", fontSize: 11, margin: "8px 0 20px", lineHeight: 1.5 }}>
-          ✓ YouTube Shorts · For TikTok/Instagram: download and upload feature coming soon
+          Works with Shorts, regular YouTube links and youtu.be links. Grabs 4 frames automatically.
         </p>
-
         {error && (
           <div style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "10px 14px", color: "#f87171", fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>
             {error}
           </div>
         )}
-
         <button onClick={analyzeVideo} disabled={!apiKey} style={{ ...S.btnPrimary, opacity: apiKey ? 1 : 0.4, cursor: apiKey ? "pointer" : "not-allowed" }}>
           Analyze Video →
         </button>
       </div>
 
-      {/* How it works */}
       <div style={{ marginTop: 24, display: "flex", flexDirection: "column", gap: 8 }}>
         {[
-          { n: "01", t: "Drop a viral video URL", d: "Gemini Vision reads every frame" },
-          { n: "02", t: "Visual DNA extracted",   d: "Scene, background, activity, lighting, pacing — all captured" },
-          { n: "03", t: "Your creator, same scene", d: "Imagen 3 places her in the exact same world" },
-          { n: "04", t: "Script adapted for Flashcall", d: "Same energy, different content — feels completely natural" },
+          { n: "01", t: "Paste any YouTube URL",         d: "Shorts, regular videos, youtu.be — all work" },
+          { n: "02", t: "4 frames grabbed automatically", d: "Thumbnail + 3 time-coded frames across the whole video" },
+          { n: "03", t: "Gemini reads all 4 frames",      d: "Scene, background, activity, lighting, pacing — full DNA" },
+          { n: "04", t: "Your creator, exact same scene", d: "Placed in the same world with a Flashcall script" },
         ].map(s => (
           <div key={s.n} style={{ display: "flex", gap: 14, alignItems: "flex-start", padding: "10px 14px", background: "#06080f", border: "1px solid #0c1428", borderRadius: 10 }}>
             <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: "#1e3060", fontWeight: 700, flexShrink: 0, marginTop: 2 }}>{s.n}</span>
@@ -5270,14 +5290,13 @@ Return ONLY valid JSON, no extra text:
     </div>
   );
 
-  // ── Loading screen ───────────────────────────────────────────────
   if (step === "analyzing" || step === "generating") {
-    const steps = step === "analyzing"
-      ? ["Watching the video", "Mapping scene & background", "Analyzing lighting & camera", "Extracting script DNA"]
-      : ["Building scene prompt", "Generating creator in exact scene", "Writing the Flashcall script", "Assembling your brief"];
+    const loadSteps = step === "analyzing"
+      ? ["Fetching 4 frames from YouTube", "Sending frames to Gemini Vision", "Extracting visual DNA", "Building scene map"]
+      : ["Building scene prompt", "Generating creator in exact scene", "Writing Flashcall script", "Assembling brief"];
     return (
       <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-        <div style={{ width: "100%", maxWidth: 340, textAlign: "center" }}>
+        <div style={{ width: "100%", maxWidth: 360, textAlign: "center" }}>
           <div style={{ width: 64, height: 64, margin: "0 auto 28px", position: "relative" }}>
             <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "2px solid rgba(255,31,106,0.15)", borderTopColor: "#ff1f6a", animation: "spin 0.9s linear infinite" }}/>
             <div style={{ position: "absolute", inset: 12, borderRadius: "50%", border: "2px solid rgba(99,102,241,0.1)", borderBottomColor: "#6366f1", animation: "spin 1.6s linear infinite reverse" }}/>
@@ -5285,24 +5304,18 @@ Return ONLY valid JSON, no extra text:
           <h2 style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontSize: 20, fontWeight: 800, color: "#f1f5f9", margin: "0 0 8px" }}>
             {step === "analyzing" ? "Reading the video" : "Building your ad"}
           </h2>
-          <p style={{ color: "#374151", fontSize: 13, margin: "0 0 28px" }}>{loadingMsg || "This takes about 30–45 seconds…"}</p>
+          <p style={{ color: "#374151", fontSize: 13, margin: "0 0 28px", lineHeight: 1.6 }}>{loadingMsg}</p>
           <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-            {steps.map((s, i) => {
+            {loadSteps.map((s, i) => {
               const done = i < loadingTick, active = i === loadingTick;
               return (
                 <div key={i} style={{
                   display: "flex", alignItems: "center", gap: 10,
                   background: done ? "rgba(16,185,129,0.06)" : active ? "rgba(255,31,106,0.06)" : "#06080f",
-                  border: `1px solid ${done ? "rgba(16,185,129,0.2)" : active ? "rgba(255,31,106,0.2)" : "#0c1428"}`,
+                  border: "1px solid " + (done ? "rgba(16,185,129,0.2)" : active ? "rgba(255,31,106,0.2)" : "#0c1428"),
                   borderRadius: 9, padding: "9px 14px", transition: "all 0.4s ease",
                 }}>
-                  <div style={{
-                    width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
-                    background: done ? "#10b981" : "transparent",
-                    border: done ? "none" : `1px solid ${active ? "#ff1f6a" : "#1a2540"}`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: 9, color: "#fff",
-                  }}>
+                  <div style={{ width: 18, height: 18, borderRadius: "50%", flexShrink: 0, background: done ? "#10b981" : "transparent", border: done ? "none" : "1px solid " + (active ? "#ff1f6a" : "#1a2540"), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, color: "#fff" }}>
                     {done ? "✓" : active ? <span style={{ width: 5, height: 5, borderRadius: "50%", background: "#ff1f6a", display: "block", animation: "pulse 1s infinite" }}/> : null}
                   </div>
                   <span style={{ color: done ? "#10b981" : active ? "#f1f5f9" : "#374151", fontSize: 12, textAlign: "left" }}>{s}</span>
@@ -5310,12 +5323,20 @@ Return ONLY valid JSON, no extra text:
               );
             })}
           </div>
+          {frames.length > 0 && (
+            <div style={{ marginTop: 24, display: "flex", gap: 6, justifyContent: "center" }}>
+              {frames.map((f, i) => (
+                <div key={i} style={{ width: 56, aspectRatio: "9/16", borderRadius: 6, overflow: "hidden", border: "1px solid #0c1428" }}>
+                  <img src={f.preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
-  // ── DNA screen ───────────────────────────────────────────────────
   if (step === "dna" && analysis) {
     const dnaItems = [
       { icon: "🎬", label: "Scene",        val: analysis.scene },
@@ -5330,18 +5351,28 @@ Return ONLY valid JSON, no extra text:
       { icon: "👗", label: "Creator Look", val: analysis.creator_look },
     ];
     return (
-      <div style={{ padding: "40px 32px", maxWidth: 800, margin: "0 auto" }}>
-        <div style={{ marginBottom: 28 }}>
+      <div style={{ padding: "40px 32px", maxWidth: 820, margin: "0 auto" }}>
+        <div style={{ marginBottom: 24 }}>
           <div style={{ ...S.pill("#10b981"), marginBottom: 14 }}>✓ VISUAL DNA EXTRACTED</div>
           <h2 style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontSize: 26, fontWeight: 800, color: "#f1f5f9", margin: "0 0 6px", letterSpacing: "-0.4px" }}>
             Got everything from the video
           </h2>
-          <p style={{ color: "#374151", margin: 0, fontSize: 14 }}>
-            Now describe your creator — we'll place her in this exact scene, doing the exact same thing.
-          </p>
+          <p style={{ color: "#374151", margin: 0, fontSize: 14 }}>Now describe your creator — she will be placed in this exact scene doing the exact same thing.</p>
         </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginBottom: 28 }}>
+        {frames.length > 0 && (
+          <div style={{ display: "flex", gap: 8, marginBottom: 24 }}>
+            {frames.map((f, i) => (
+              <div key={i} style={{ width: 70, aspectRatio: "9/16", borderRadius: 10, overflow: "hidden", border: "1px solid #0c1428", flexShrink: 0 }}>
+                <img src={f.preview} alt={"Frame " + (i+1)} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+              </div>
+            ))}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", paddingLeft: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#94a3b8", marginBottom: 4 }}>Analyzed {frames.length} frames</div>
+              <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.6 }}>Gemini read across the full video arc to extract the DNA below.</div>
+            </div>
+          </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 8, marginBottom: 24 }}>
           {dnaItems.map((item, i) => (
             <div key={i} style={{ ...S.card, padding: "12px 16px" }}>
               <div style={{ color: "#374151", fontSize: 10, letterSpacing: "0.07em", marginBottom: 5, display: "flex", alignItems: "center", gap: 5 }}>
@@ -5351,16 +5382,15 @@ Return ONLY valid JSON, no extra text:
             </div>
           ))}
         </div>
-
         <div style={{ ...S.card, border: "1px solid rgba(255,31,106,0.2)" }}>
-          <h3 style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: "0 0 5px", letterSpacing: "-0.3px" }}>
+          <h3 style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontSize: 18, fontWeight: 800, color: "#f1f5f9", margin: "0 0 5px" }}>
             Describe your creator
           </h3>
           <p style={{ color: "#374151", fontSize: 13, margin: "0 0 16px", lineHeight: 1.65 }}>
-            She'll be placed in the exact same scene — same background, same activity, same lighting. Only what she says changes.
+            Same background, same activity, same lighting. Only what she says changes.
           </p>
           <textarea
-            placeholder="e.g. South Indian woman, mid-20s, natural makeup, dark wavy hair, warm smile, casual home outfit — the kind of creator who feels like your best friend"
+            placeholder="e.g. South Indian woman, mid-20s, natural makeup, dark wavy hair, warm smile, casual home outfit"
             value={creatorDesc}
             onChange={e => setCreatorDesc(e.target.value)}
             rows={3}
@@ -5377,61 +5407,37 @@ Return ONLY valid JSON, no extra text:
     );
   }
 
-  // ── Brief screen ─────────────────────────────────────────────────
   if (step === "brief" && script) {
-    const CopyBtn = ({ textKey, text, label = "Copy" }) => (
-      <button
-        onClick={() => copyText(text, textKey)}
-        style={{
-          background: "none", cursor: "pointer",
-          border: `1px solid ${copied === textKey ? "rgba(16,185,129,0.3)" : "#1a2540"}`,
-          color: copied === textKey ? "#10b981" : "#374151",
-          borderRadius: 5, padding: "2px 9px", fontSize: 10,
-          fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s",
-        }}>
-        {copied === textKey ? "✓" : label}
+    const CopyBtn = ({ textKey, text, label }) => (
+      <button onClick={() => copyText(text, textKey)} style={{ background: "none", cursor: "pointer", border: "1px solid " + (copied === textKey ? "rgba(16,185,129,0.3)" : "#1a2540"), color: copied === textKey ? "#10b981" : "#374151", borderRadius: 5, padding: "2px 9px", fontSize: 10, fontFamily: "'DM Sans', sans-serif", transition: "all 0.2s" }}>
+        {copied === textKey ? "✓" : (label || "Copy")}
       </button>
     );
-
     return (
       <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-        {/* Top bar */}
-        <div style={{
-          borderBottom: "1px solid #0c1428", padding: "13px 24px",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          background: "rgba(6,6,14,0.9)", backdropFilter: "blur(12px)",
-          position: "sticky", top: 0, zIndex: 10,
-        }}>
+        <div style={{ borderBottom: "1px solid #0c1428", padding: "13px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(6,6,14,0.9)", backdropFilter: "blur(12px)", position: "sticky", top: 0, zIndex: 10 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ width: 7, height: 7, background: "#ff1f6a", borderRadius: "50%", display: "inline-block", boxShadow: "0 0 8px #ff1f6a" }}/>
-            <span style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontWeight: 800, fontSize: 14, color: "#f1f5f9", letterSpacing: "-0.3px" }}>
-              Ad Brief Ready
-            </span>
+            <span style={{ fontFamily: "'Bricolage Grotesque', sans-serif", fontWeight: 800, fontSize: 14, color: "#f1f5f9" }}>Ad Brief Ready</span>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => { setStep("dna"); setGeneratedImage(null); setScript(null); }} style={S.btnGhost}>
-              ← Regenerate
-            </button>
-            <button onClick={() => { setStep("setup"); setAnalysis(null); setScript(null); setGeneratedImage(null); setCreatorDesc(""); setVideoUrl(""); setError(""); }} style={S.btnGhost}>
-              New Campaign
-            </button>
+            <button onClick={() => { setStep("dna"); setGeneratedImage(null); setScript(null); }} style={S.btnGhost}>← Regenerate</button>
+            <button onClick={() => { setStep("setup"); setAnalysis(null); setScript(null); setGeneratedImage(null); setCreatorDesc(""); setVideoUrl(""); setFrames([]); setError(""); }} style={S.btnGhost}>New Campaign</button>
           </div>
         </div>
-
         <div style={{ flex: 1, padding: "28px 24px" }}>
           <div style={{ display: "grid", gridTemplateColumns: "250px 1fr", gap: 24, maxWidth: 1040, margin: "0 auto" }}>
-
-            {/* Left: scene image */}
             <div>
               <p style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em", margin: "0 0 8px" }}>GENERATED SCENE</p>
               <div style={{ aspectRatio: "9/16", background: "#08090f", borderRadius: 16, overflow: "hidden", border: "1px solid #0c1428", position: "relative" }}>
                 {generatedImage
                   ? <img src={generatedImage} alt="Generated scene" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
-                  : <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  : <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10 }}>
                       <div style={{ width: 24, height: 24, borderRadius: "50%", border: "2px solid #ff1f6a", borderTopColor: "transparent", animation: "spin 1s linear infinite" }}/>
+                      <span style={{ color: "#374151", fontSize: 11 }}>Generating...</span>
                     </div>
                 }
-                {script.text_overlays?.[0] && generatedImage && (
+                {script.text_overlays && script.text_overlays[0] && generatedImage && (
                   <div style={{ position: "absolute", top: 12, left: 8, right: 8, textAlign: "center" }}>
                     <span style={{ background: "rgba(0,0,0,0.65)", color: "#fff", padding: "4px 10px", borderRadius: 5, fontSize: 11, fontWeight: 700, fontFamily: "'Bricolage Grotesque', sans-serif", backdropFilter: "blur(4px)" }}>
                       {script.text_overlays[0]}
@@ -5445,70 +5451,77 @@ Return ONLY valid JSON, no extra text:
                   </div>
                 </div>
               </div>
-
-              {script.text_overlays?.length > 0 && (
+              {frames.length > 0 && (
+                <div style={{ marginTop: 10 }}>
+                  <p style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em", margin: "0 0 6px" }}>REFERENCE FRAMES</p>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {frames.map((f, i) => (
+                      <div key={i} style={{ flex: 1, aspectRatio: "9/16", borderRadius: 6, overflow: "hidden", border: "1px solid #0c1428" }}>
+                        <img src={f.preview} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {script.text_overlays && script.text_overlays.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <p style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em", margin: "0 0 7px" }}>TEXT OVERLAYS</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                     {script.text_overlays.map((t, i) => (
                       <div key={i} style={{ background: "#06080f", border: "1px solid #0c1428", borderRadius: 7, padding: "6px 10px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                        <span style={{ color: "#94a3b8", fontSize: 11, lineHeight: 1.4 }}>{t}</span>
-                        <span style={{ color: "#1e3060", fontSize: 9, background: "#060a18", borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>#{i+1}</span>
+                        <span style={{ color: "#94a3b8", fontSize: 11 }}>{t}</span>
+                        <span style={{ color: "#1e3060", fontSize: 9, background: "#060a18", borderRadius: 3, padding: "1px 5px", flexShrink: 0 }}>{"#" + (i+1)}</span>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
             </div>
-
-            {/* Right: script */}
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-
-              {/* Hook */}
               <div style={{ background: "rgba(255,31,106,0.05)", border: "1px solid rgba(255,31,106,0.18)", borderRadius: 14, padding: "18px 20px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                  <span style={{ color: "#ff1f6a", fontSize: 10, letterSpacing: "0.1em" }}>🪝 THE HOOK — 0–3 SEC</span>
+                  <span style={{ color: "#ff1f6a", fontSize: 10, letterSpacing: "0.1em" }}>THE HOOK — 0-3 SEC</span>
                   <CopyBtn textKey="hook" text={script.hook} />
                 </div>
                 <p style={{ color: "#f1f5f9", fontSize: 18, fontWeight: 800, margin: 0, fontFamily: "'Bricolage Grotesque', sans-serif", lineHeight: 1.35, letterSpacing: "-0.3px" }}>
                   "{script.hook}"
                 </p>
               </div>
-
-              {/* Full script */}
               <div style={S.card}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <span style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em" }}>📝 FULL SCRIPT — 60 SEC</span>
+                  <span style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em" }}>FULL SCRIPT — 60 SEC</span>
                   <CopyBtn textKey="script" text={script.full_script} label="Copy Script" />
                 </div>
                 <div style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.85, whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto" }}>
                   {script.full_script}
                 </div>
               </div>
-
-              {/* Caption */}
               <div style={S.card}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <span style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em" }}>📱 CAPTION</span>
+                  <span style={{ color: "#374151", fontSize: 10, letterSpacing: "0.1em" }}>CAPTION</span>
                   <CopyBtn textKey="caption" text={script.caption} />
                 </div>
                 <p style={{ color: "#94a3b8", fontSize: 13, lineHeight: 1.7, margin: 0 }}>{script.caption}</p>
               </div>
-
-              {/* CTA */}
               <div style={{ background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.18)", borderRadius: 14, padding: "16px 20px" }}>
-                <span style={{ color: "#818cf8", fontSize: 10, letterSpacing: "0.1em", display: "block", marginBottom: 7 }}>🔗 CALL TO ACTION</span>
-                <p style={{ color: "#f1f5f9", fontSize: 16, fontWeight: 800, margin: 0, fontFamily: "'Bricolage Grotesque', sans-serif", letterSpacing: "-0.3px" }}>
-                  {script.cta}
-                </p>
+                <span style={{ color: "#818cf8", fontSize: 10, letterSpacing: "0.1em", display: "block", marginBottom: 7 }}>CALL TO ACTION</span>
+                <p style={{ color: "#f1f5f9", fontSize: 16, fontWeight: 800, margin: 0, fontFamily: "'Bricolage Grotesque', sans-serif", letterSpacing: "-0.3px" }}>{script.cta}</p>
               </div>
+              <button onClick={() => copyText("HOOK:
+" + script.hook + "
 
-              <button
-                onClick={() => copyText(
-                  `HOOK:\n${script.hook}\n\nFULL SCRIPT:\n${script.full_script}\n\nTEXT OVERLAYS:\n${script.text_overlays?.join("\n")}\n\nCAPTION:\n${script.caption}\n\nCTA:\n${script.cta}`,
-                  "all"
-                )}
-                style={{ ...S.btnPrimary, marginTop: 4 }}>
+FULL SCRIPT:
+" + script.full_script + "
+
+TEXT OVERLAYS:
+" + (script.text_overlays || []).join("
+") + "
+
+CAPTION:
+" + script.caption + "
+
+CTA:
+" + script.cta, "all")} style={{ ...S.btnPrimary, marginTop: 4 }}>
                 {copied === "all" ? "✓ Full Brief Copied!" : "Copy Full Brief"}
               </button>
             </div>
