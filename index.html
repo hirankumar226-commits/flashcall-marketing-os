@@ -606,18 +606,21 @@ async function callOpenAIText(systemPrompt, userPrompt, maxTokens = 8192) {
 }
 
 async function callClaudeText(systemPrompt, userPrompt, maxTokens = 8192) {
-  maxTokens = Math.min(maxTokens, 8192); // Haiku 4.5 max output
+  maxTokens = Math.min(maxTokens, 4096); // safe cap for Haiku 4.5
   const key = loadSettings().claudeApiKey;
   if (!key || !key.trim()) throw new Error("No Claude API key. Add it in ⚙️ Settings.");
+  const reqBody = {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: maxTokens,
+    messages: [{ role: "user", content: String(userPrompt || "") }]
+  };
+  if (systemPrompt && String(systemPrompt).trim()) {
+    reqBody.system = String(systemPrompt).trim();
+  }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "Content-Type": "application/json", "x-api-key": key.trim(), "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }]
-    })
+    body: JSON.stringify(reqBody)
   });
   if (!res.ok) {
     const errTxt = await res.text().catch(() => "");
