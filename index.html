@@ -576,6 +576,38 @@ async function callGemini(systemPrompt, userPrompt, maxTokens = 8192) {
   return text;
 }
 
+async function callOpenAIText(systemPrompt, userPrompt, maxTokens = 8192) {
+  const key = loadSettings().openaiApiKey;
+  if (!key || !key.trim()) throw new Error("No OpenAI API key. Add it in ⚙️ Settings.");
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key.trim()}` },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      max_tokens: maxTokens,
+      temperature: 1.0,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+      ]
+    })
+  });
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => "");
+    throw new Error(`OpenAI HTTP ${res.status}: ${errTxt.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(`OpenAI Error: ${data.error.message || JSON.stringify(data.error)}`);
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error("OpenAI returned empty response. Please try again.");
+  return text;
+}
+
+async function callAI(provider, systemPrompt, userPrompt, maxTokens = 8192) {
+  if (provider === "openai") return callOpenAIText(systemPrompt, userPrompt, maxTokens);
+  return callGemini(systemPrompt, userPrompt, maxTokens);
+}
+
 /* ── ROBUST JSON ARRAY EXTRACTOR ──────────────────────────────────── */
 // Extracts a JSON array from AI text that may have markdown fences or extra prose
 function extractJSONArray(rawText) {
@@ -1954,6 +1986,7 @@ function GeneratorPage() {
   const [concepts, setConcepts]     = useState([]);
   const [toast, setToast]           = useState(null);
   const [hasKey, setHasKey]         = useState(false);
+  const [aiProvider, setAiProvider] = useState("gemini"); // "gemini" | "openai"
   // ── NEW: Themes, platforms, count ─────────────────────────────────
   const [selectedPlatforms, setSelectedPlatforms] = useState(["Instagram Reel", "TikTok Video"]);
   const [conceptCount, setConceptCount]           = useState(1);
@@ -1969,7 +2002,7 @@ function GeneratorPage() {
   // On mount: check API key, load today's cached concepts
   useEffect(() => {
     const s = loadSettings();
-    setHasKey(Boolean(s.geminiApiKey && s.geminiApiKey.trim()));
+    setHasKey(Boolean((s.geminiApiKey && s.geminiApiKey.trim()) || (s.openaiApiKey && s.openaiApiKey.trim())));
     const daily = lsGet(K_DAILY, null);
     if (daily && daily.date === todayStr() && Array.isArray(daily.concepts) && daily.concepts.length > 0) {
       setConcepts(daily.concepts);
@@ -1996,7 +2029,7 @@ function GeneratorPage() {
     if (generating) return;
     const s = loadSettings();
     if (!s.geminiApiKey || !s.geminiApiKey.trim()) {
-      showToast("Add your Gemini API key in ⚙️ Settings first.", "error");
+      showToast(`Add your ${aiProvider === "openai" ? "OpenAI" : "Gemini"} API key in ⚙️ Settings first.`, "error");
       return;
     }
     if (selectedPlatforms.length === 0) {
@@ -2159,7 +2192,7 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
 ]`;
 
       setProgress("Waiting for AI response...");
-      const rawText = await callGemini(systemPrompt, userPrompt, 9000);
+      const rawText = await callAI(aiProvider, systemPrompt, userPrompt, 9000);
 
       setProgress("Parsing concepts...");
       const parsed = extractJSONArray(rawText);
@@ -2319,7 +2352,7 @@ CRITICAL OUTPUT RULES:
   }
 ]`;
 
-      const rawText = await callGemini(buildBrandContext(), userPrompt, 9000);
+      const rawText = await callAI(aiProvider, buildBrandContext(), userPrompt, 9000);
       setProgress("Parsing concepts…");
       const parsed = extractJSONArray(rawText);
 
@@ -2444,6 +2477,15 @@ CRITICAL OUTPUT RULES:
               transition: "all 0.18s",
             }}>
             <span>{m.icon}</span> {m.label}
+          </button>
+        ))}
+      </div>
+
+      {/* AI Provider toggle */}
+      <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ ChatGPT","#10b981"]].map(([id,label,col]) => (
+          <button key={id} onClick={() => setAiProvider(id)} style={{ flex:1, padding:"9px 14px", borderRadius:10, border:"1px solid "+(aiProvider===id ? col+"60" : "#0e1830"), background:aiProvider===id ? col+"10" : "#06080f", color:aiProvider===id ? col : "#374151", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", transition:"all 0.2s" }}>
+            {label}
           </button>
         ))}
       </div>
@@ -4450,6 +4492,22 @@ function CharactersPage() {
             )}
           </div>
 
+          <div style={{ background: "#08090f", border: "1px solid #0c1428", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              OpenAI API Key
+            </label>
+            <input
+              type={showKey ? "text" : "password"}
+              value={s.openaiApiKey || ""}
+              onChange={e => update("openaiApiKey", e.target.value)}
+              placeholder="sk-..."
+              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, outline: "none", fontFamily: "'DM Mono', monospace", boxSizing: "border-box" }}
+            />
+            <p style={{ color: "#1e2d4a", fontSize: 11, margin: "6px 0 0", lineHeight: 1.5 }}>
+              platform.openai.com → API keys. Used for GPT-4o in Ad Studio.
+            </p>
+          </div>
+
           <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
             <input
               type="checkbox" id="isDefaultChk"
@@ -4960,10 +5018,14 @@ function AdStudioPage() {
   const [loadingMsg, setLoadingMsg]   = useState("");
   const [loadingTick, setLoadingTick] = useState(0);
   const [copied, setCopied]           = useState("");
+  const [provider, setProvider]       = useState("gemini"); // "gemini" | "openai"
   const tickerRef = useRef(null);
 
-  const apiKey = loadSettings().geminiApiKey?.trim() || "";
-  const MODEL  = "gemini-2.5-flash";
+  const settings  = loadSettings();
+  const apiKey    = settings.geminiApiKey?.trim() || "";
+  const openaiKey = settings.openaiApiKey?.trim() || "";
+  const MODEL     = "gemini-2.5-flash";
+  const activeKey = provider === "openai" ? openaiKey : apiKey;
 
   const fetchWithTimeout = (url, opts, ms) => {
     const ctrl = new AbortController();
@@ -4994,7 +5056,7 @@ function AdStudioPage() {
     } catch (_) { return null; }
   };
 
-  const gemini = async (body) => {
+  const callGemini = async (body) => {
     const res = await fetchWithTimeout(
       "https://generativelanguage.googleapis.com/v1beta/models/" + MODEL + ":generateContent?key=" + apiKey,
       { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
@@ -5003,12 +5065,44 @@ function AdStudioPage() {
     const d = await res.json();
     if (d.error) throw new Error(d.error.message);
     if (!d.candidates || !d.candidates[0] || !d.candidates[0].content || !d.candidates[0].content.parts || !d.candidates[0].content.parts[0]) throw new Error("Empty response from Gemini");
-    return d;
+    return { text: d.candidates[0].content.parts[0].text };
+  };
+
+  const callOpenAI = async (messages) => {
+    const res = await fetchWithTimeout(
+      "https://api.openai.com/v1/chat/completions",
+      { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + openaiKey },
+        body: JSON.stringify({ model: "gpt-4o", messages, response_format: { type: "json_object" } }) },
+      60000
+    );
+    const d = await res.json();
+    if (d.error) throw new Error(d.error.message);
+    if (!d.choices || !d.choices[0]) throw new Error("Empty response from OpenAI");
+    return { text: d.choices[0].message.content };
+  };
+
+  // Unified call — routes to whichever provider is selected
+  const aiCall = async (textPrompt, imageParts) => {
+    if (provider === "openai") {
+      // Build OpenAI messages — images as base64 data URLs
+      const contentParts = (imageParts || []).map(p => ({
+        type: "image_url",
+        image_url: { url: "data:image/jpeg;base64," + p.inline_data.data }
+      }));
+      contentParts.push({ type: "text", text: textPrompt });
+      return await callOpenAI([{ role: "user", content: contentParts }]);
+    } else {
+      // Gemini format
+      const parts = (imageParts || []).map(p => p);
+      parts.push({ text: textPrompt });
+      const body = { contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } };
+      return await callGemini(body);
+    }
   };
 
   const analyzeVideo = async () => {
     setError("");
-    if (!apiKey) return setError("No Gemini API key — add it in Settings first.");
+    if (!activeKey) return setError("No " + (provider === "openai" ? "OpenAI" : "Gemini") + " API key — add it in Settings first.");
     if (!videoUrl.trim()) return setError("Paste a YouTube URL first.");
     const vid = extractVideoId(videoUrl.trim());
     if (!vid) return setError("Could not read the video ID — check it is a valid YouTube URL.");
@@ -5033,11 +5127,9 @@ function AdStudioPage() {
       setLoadingMsg("Sending " + valid.length + " frames to Gemini Vision...");
       const titleBit = title ? " titled \"" + title + "\"" : "";
       const prompt = "You are a UGC creative director. I have " + valid.length + " frame grabs from a viral video" + titleBit + " (thumbnail, early, middle, late). Extract the complete visual DNA to recreate it for Flashcall — a platform where fans book personal 1:1 calls with their favourite creator. Return ONLY valid JSON with these exact keys: scene, background_details, activity, lighting, camera_angle, color_grade, energy, hook_style, script_structure, pacing, creator_look, key_props, scene_image_prompt. For scene_image_prompt write a detailed image generation prompt that recreates the EXACT scene. Critical style rules for scene_image_prompt: shot on iPhone front camera, slightly soft focus, natural ambient room lighting only, casual handheld framing, slightly imperfect composition, ordinary lived-in home environment, unedited raw look, vertical 9:16. Do NOT use words like photorealistic, professional, studio, high quality, sharp, polished or cinematic. It must look like a real unedited TikTok or Instagram Reel self-recording, not a photoshoot.";
-      const data = await gemini({
-        contents: [{ parts: [...valid.map(f => ({ inline_data: { mime_type: "image/jpeg", data: f.b } })), { text: prompt }] }],
-        generationConfig: { responseMimeType: "application/json" }
-      });
-      const parsed = JSON.parse(data.candidates[0].content.parts[0].text.replace(/```json|```/g, "").trim());
+      const imageParts = valid.map(f => ({ inline_data: { mime_type: "image/jpeg", data: f.b } }));
+      const result = await aiCall(prompt, imageParts);
+      const parsed = JSON.parse(result.text.replace(/```json|```/g, "").trim());
       setAnalysis(parsed);
       setStep("dna");
     } catch (err) {
@@ -5083,8 +5175,8 @@ function AdStudioPage() {
       if (!imgSrc) setError("Image failed (" + imgErr + ") — script is still ready below.");
       setLoadingMsg("Writing the Flashcall script...");
       const sp = "You are a top UGC scriptwriter for Flashcall — a platform where fans book personal 1:1 calls with their favourite creator. Reference DNA — Activity: " + (analysis.activity||"") + ". Scene: " + (analysis.scene||"") + ". Energy: " + (analysis.energy||"") + ". Hook style: " + (analysis.hook_style||"") + ". Pacing: " + (analysis.pacing||"") + ". Write a 60-second UGC ad script. Creator stays in the same physical activity, weaves Flashcall in naturally, mirrors the reference hook exactly, feels real and unscripted. Never say audience — say fans or you. Return ONLY valid JSON with keys: hook, full_script, text_overlays (array of 4), caption, cta.";
-      const sr = await gemini({ contents: [{ parts: [{ text: sp }] }], generationConfig: { responseMimeType: "application/json" } });
-      const ps = JSON.parse(sr.candidates[0].content.parts[0].text.replace(/```json|```/g, "").trim());
+      const sr = await aiCall(sp, []);
+      const ps = JSON.parse(sr.text.replace(/```json|```/g, "").trim());
       setScript(ps);
       setStep("brief");
     } catch (err) {
@@ -5119,7 +5211,15 @@ function AdStudioPage() {
       <p style={{ color:"#374151", fontSize:14, lineHeight:1.7, margin:"0 0 28px" }}>
         Paste a YouTube URL — we grab 4 frames automatically and send them to Gemini Vision. Full visual DNA extracted, no manual steps.
       </p>
-      {!apiKey && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:20 }}>No Gemini key — add it in <strong>Settings</strong> first.</div>}
+      {provider === "gemini" && !apiKey && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:16 }}>No Gemini key — add it in <strong>Settings</strong> first.</div>}
+      {provider === "openai" && !openaiKey && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:16 }}>No OpenAI key — add it in <strong>Settings</strong> first.</div>}
+      <div style={{ display:"flex", gap:8, marginBottom:20 }}>
+        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ ChatGPT","#10b981"]].map(([id,label,col]) => (
+          <button key={id} onClick={() => setProvider(id)} style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid "+(provider===id ? col+"60" : "#0c1428"), background:provider===id ? col+"10" : "#06080f", color:provider===id ? col : "#374151", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", transition:"all 0.2s" }}>
+            {label}
+          </button>
+        ))}
+      </div>
       <div style={S.card}>
         <label style={{ fontSize:10, color:"#374151", display:"block", marginBottom:8, textTransform:"uppercase", letterSpacing:"1px" }}>YouTube / YouTube Shorts URL</label>
         <input type="url" placeholder="https://www.youtube.com/shorts/..." value={videoUrl}
@@ -5178,7 +5278,10 @@ function AdStudioPage() {
     return (
       <div style={{ padding:"40px 32px", maxWidth:820, margin:"0 auto" }}>
         <div style={{ ...S.pill("#10b981"), marginBottom:14 }}>✓ VISUAL DNA EXTRACTED</div>
-        <h2 style={{ fontFamily:"'Bricolage Grotesque',sans-serif", fontSize:26, fontWeight:800, color:"#f1f5f9", margin:"0 0 6px" }}>Got everything from the video</h2>
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
+          <h2 style={{ fontFamily:"'Bricolage Grotesque',sans-serif", fontSize:26, fontWeight:800, color:"#f1f5f9", margin:0 }}>Got everything from the video</h2>
+          <span style={{ fontSize:10, fontWeight:700, padding:"3px 10px", borderRadius:100, background:provider==="openai"?"rgba(16,185,129,0.1)":"rgba(255,31,106,0.1)", color:provider==="openai"?"#10b981":"#ff1f6a", border:"1px solid "+(provider==="openai"?"rgba(16,185,129,0.2)":"rgba(255,31,106,0.2)") }}>{provider==="openai"?"GPT-4o":"Gemini 2.5"}</span>
+        </div>
         <p style={{ color:"#374151", margin:"0 0 20px", fontSize:14 }}>Now describe your creator — same scene, same activity. Only what she says changes.</p>
         {frames.length>0 && <div style={{ display:"flex", gap:8, marginBottom:20 }}>{frames.map((f,i) => <div key={i} style={{ width:68, aspectRatio:"9/16", borderRadius:10, overflow:"hidden", border:"1px solid #0c1428", flexShrink:0 }}><img src={f.preview} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/></div>)}<div style={{ flex:1, display:"flex", alignItems:"center", paddingLeft:12 }}><span style={{ fontSize:11, color:"#374151" }}>Gemini analyzed {frames.length} frames across the full video arc.</span></div></div>}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(2,1fr)", gap:8, marginBottom:20 }}>
