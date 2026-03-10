@@ -2116,7 +2116,7 @@ function GeneratorPage() {
 
       setProgress(`Generating ${conceptCount} unique concepts...`);
 
-      const systemPrompt = buildBrandContext() + (creatorVoice.trim() ? "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCREATOR VOICE REFERENCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nThe scripts you generate MUST match the exact tone, language style, sentence rhythm, and energy of this reference script. If it uses Hinglish, use Hinglish. If it's conversational, keep it conversational. Mirror the creator's natural voice closely — do not make it sound generic or AI-written.\n\nREFERENCE SCRIPT:\n" + creatorVoice.trim().slice(0, 2000) : "");
+      const systemPrompt = buildBrandContext() + (creatorVoice.trim() ? "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCREATOR VOICE REFERENCE\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\nCRITICAL INSTRUCTION — CREATOR VOICE MATCHING:\nYou MUST write every script in the EXACT voice of the reference script below. This means:\n- Same language mix (if Hinglish → write in Hinglish throughout)\n- Same sentence length and rhythm (short punchy lines → keep them short)\n- Same energy and tone (conversational, peer-to-peer → NOT corporate or formal)\n- Same structural patterns (rhetorical questions, direct address, emotional beats)\n- DO NOT write in polished English if the reference is not polished English\n- DO NOT use long sentences if the reference uses short ones\n- Every line should feel like it came from the same creator\n\nREFERENCE SCRIPT (match this voice exactly):\n" + creatorVoice.trim().slice(0, 2000) : "");
 
       // Theme context
       const theme      = themes.find(t => t.id === selectedTheme);
@@ -2176,7 +2176,7 @@ PLATFORM + ANGLE ASSIGNMENTS (follow exactly):
 ${angleAssignments}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SCRIPT RULES — READ THESE CAREFULLY:
+${creatorVoice.trim() ? "CREATOR VOICE OVERRIDE: Write ALL scripts in the EXACT voice of the reference script. If reference is Hinglish, write Hinglish. If reference uses short 1-line punches, use short lines. Language match is MORE IMPORTANT than word count rules below.\n\n" : ""}SCRIPT RULES — READ THESE CAREFULLY:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Every script is spoken by a real person to camera. It must sound like a voice memo, not a marketing email.
 
@@ -2237,27 +2237,27 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     "scenes": [
       {
         "label": "Hook",
-        "script": "ACTUAL spoken words only. 1-2 sentences. 8-15 words. Specific and surprising. Reads like something a real person just said.",
+        "script": "ACTUAL spoken words only. Match creator voice language if provided (e.g. Hinglish). 1-2 short punchy lines. Specific and surprising.",
         "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Problem",
-        "script": "The pain. 3-5 sentences. 40-60 words. Specific situation. Short sentences. One idea per sentence. No brand words.",
+        "script": "The pain. Match creator voice language if provided. Short punchy lines, one idea per line. Specific situation. No brand words.",
         "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Insight",
-        "script": "The turn or reframe. 3-4 sentences. 35-50 words. What they got wrong or what changed. Conversational.",
+        "script": "The turn or reframe. Match creator voice language if provided. Short lines. What they got wrong or what changed.",
         "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Solution",
-        "script": "How it got better. 3-5 sentences. 40-55 words. Product name appears once here, casually. Specific outcome.",
+        "script": "How it got better. Match creator voice language if provided. Product name once casually. Specific outcome.",
         "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "CTA",
-        "script": "One sentence. 10-20 words. Soft, human. Not a command. A thought they carry with them.",
+        "script": "One line. Soft and human. Match creator voice language if provided. Not a command.",
         "visualNote": "Energy/emotion for this beat"
       }
     ],
@@ -3800,7 +3800,7 @@ Return ONLY a valid JSON array with exactly 1 object:
     "hookOnScreen": "3-5 word screen text",
     "script": {
       "hook": "0-3s spoken script",
-      "body": "3-45s spoken script only. Short sentences. First person. Specific details. No stage directions.",
+      "body": "3-45s spoken script. If creator voice reference is given, write in THAT language and style (e.g. Hinglish if reference is Hinglish). Short punchy lines. First person. Real and unscripted feel. No stage directions.",
       "cta": "45-60s CTA script"
     },
     "visualStyle": "talking head",
