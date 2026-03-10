@@ -5053,7 +5053,7 @@ function AdStudioPage() {
     setGeneratedImage(null);
     try {
       setLoadingMsg("Placing your creator in the exact scene...");
-      const imgPrompt = (analysis.scene_image_prompt || "") + ". The person in this video looks exactly like this — follow this description precisely for their face, skin tone, hair, age, and outfit: " + creatorDesc + ". Style: shot on iPhone front camera, selfie angle, natural soft room lighting, slightly imperfect casual framing, real unedited TikTok self-recording aesthetic, no studio lighting, no professional photography, no filters, grainy natural texture, ordinary background, vertical 9:16. The creator appearance description above must be followed exactly — do not substitute a different ethnicity, age, hair color, or face.";
+      const imgPrompt = (analysis.scene_image_prompt || "") + ". The person looks exactly like this — match precisely: " + creatorDesc + ". Do not change their ethnicity, skin tone, age, hair color or face under any circumstances. Technical style: low-quality smartphone selfie video still, front-facing camera, heavy digital noise and grain, motion blur, overexposed or underexposed depending on room light, washed out colors, compression artifacts, flat uneven room lighting, no bokeh, no depth of field, background is fully in focus and messy, lens distortion, 720p quality feel, looks like a WhatsApp video call screenshot or a paused TikTok recording. NOT a photoshoot. NOT professional. NOT sharp. NOT cinematic. Raw and ugly like a real self-recorded video.";
       let imgSrc = null;
       let imgErr = null;
       try {
