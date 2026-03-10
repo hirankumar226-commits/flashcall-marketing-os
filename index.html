@@ -4974,6 +4974,20 @@ function AdStudioPage() {
     return () => clearInterval(tickerRef.current);
   }, [step]);
 
+  // Try a prioritised list of models — stops at the first that succeeds
+  const VISION_MODELS = [
+    "gemini-2.5-pro-exp-03-25",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+  ];
+  const TEXT_MODELS = [
+    "gemini-2.0-flash-lite",
+    "gemini-2.5-pro-exp-03-25",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+  ];
+
   const gemini = async (model, body) => {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
@@ -4983,6 +4997,23 @@ function AdStudioPage() {
     if (data.error) throw new Error(data.error.message);
     if (!data.candidates?.[0]?.content?.parts?.[0]) throw new Error("Empty response from Gemini");
     return data;
+  };
+
+  const geminiWithFallback = async (models, body) => {
+    let lastErr = null;
+    for (const model of models) {
+      try {
+        return await gemini(model, body);
+      } catch (e) {
+        // If model not found / deprecated, try next. Otherwise rethrow immediately.
+        if (e.message && (e.message.includes("no longer available") || e.message.includes("not found") || e.message.includes("deprecated") || e.message.includes("404"))) {
+          lastErr = e;
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
   };
 
   const analyzeVideo = async () => {
@@ -4996,7 +5027,7 @@ function AdStudioPage() {
     setStep("analyzing");
     setLoadingMsg("Watching the video and reading every visual detail...");
     try {
-      const data = await gemini("gemini-2.0-flash", {
+      const data = await geminiWithFallback(VISION_MODELS, {
         contents: [{
           parts: [
             { file_data: { mime_type: "video/mp4", file_uri: trimmedUrl } },
@@ -5061,7 +5092,7 @@ function AdStudioPage() {
       setGeneratedImage(imgSrc);
 
       setLoadingMsg("Writing the Flashcall script...");
-      const scriptRes = await gemini("gemini-2.0-flash", {
+      const scriptRes = await geminiWithFallback(TEXT_MODELS, {
         contents: [{
           parts: [{ text: `You are a top UGC scriptwriter for Flashcall — a platform where fans book personal 1:1 video or audio calls with their favorite creator.
 
