@@ -55,16 +55,20 @@ a{color:inherit;text-decoration:none}
 const { useState, useEffect, useRef, useCallback, useMemo, memo } = React;
 
 /* ── STORAGE KEYS ─────────────────────────────────────────────────── */
-const K_AUTH     = "fcr_auth_v3";
-const K_SETTINGS = "fcr_settings_v3";
-const K_HISTORY  = "fcr_history_v3";   // [{id,title,hook,angle,platform,date}]
-const K_DAILY    = "fcr_daily_v3";     // {date:string, concepts:[], focus:string}
-const K_PW       = "fcr_pw_v3";        // separate password storage
-const K_THEMES   = "fcr_themes_v3";    // [{id,name,emoji,desc,promptInstructions,previewConcept,createdAt}]
+const K_AUTH       = "fcr_auth_v3";
+const K_SETTINGS   = "fcr_settings_v3";
+const K_HISTORY    = "fcr_history_v3";     // [{id,title,hook,angle,platform,date}]
+const K_DAILY      = "fcr_daily_v3";       // {date:string, concepts:[], focus:string}
+const K_PW         = "fcr_pw_v3";          // separate password storage
+const K_THEMES     = "fcr_themes_v3";      // [{id,name,emoji,desc,promptInstructions,previewConcept,createdAt}]
+const K_CHARACTERS = "fcr_characters_v3";  // [{id,name,desc,base64,publicUrl,isDefault,createdAt}]
+const K_VIDEOJOBS  = "fcr_videojobs_v3";   // [{id,nbVideoId,conceptId,title,characterId,charName,status,videoUrl,thumbUrl,prompt,createdAt,error}]
 
 /* ── DEFAULT SETTINGS ─────────────────────────────────────────────── */
 const DEFAULTS = {
   geminiApiKey:    "",
+  nanobananApiKey: "",
+  imgbbApiKey:     "",
   productName:     "Flashcall.me",
   productTagline:  "Link-in-bio for consultants",
   productDesc:     "A link-in-bio tool for consultants and experts to monetize expertise via instant pay-per-minute calls (chat, audio, video) and scheduled services.",
@@ -135,6 +139,29 @@ function clearHistory() { lsDel(K_HISTORY); lsDel(K_DAILY); }
 function loadThemes() { return lsGet(K_THEMES, []); }
 function saveThemes(t) { lsSet(K_THEMES, t); }
 
+/* ── CHARACTER HELPERS ────────────────────────────────────────────── */
+function loadCharacters() { return lsGet(K_CHARACTERS, []); }
+function saveCharacters(c) { lsSet(K_CHARACTERS, c); }
+function getDefaultCharacter() {
+  const chars = loadCharacters();
+  return chars.find(c => c.isDefault) || chars[0] || null;
+}
+
+/* ── VIDEO JOB HELPERS ────────────────────────────────────────────── */
+function loadVideoJobs() { return lsGet(K_VIDEOJOBS, []); }
+function saveVideoJobs(jobs) { lsSet(K_VIDEOJOBS, jobs); }
+function appendVideoJob(job) {
+  const prev = loadVideoJobs();
+  const updated = [job, ...prev].slice(0, 200);
+  lsSet(K_VIDEOJOBS, updated);
+}
+function updateVideoJob(id, patch) {
+  const prev = loadVideoJobs();
+  const updated = prev.map(j => j.id === id ? { ...j, ...patch } : j);
+  lsSet(K_VIDEOJOBS, updated);
+  return updated;
+}
+
 /* ── DATE HELPERS ─────────────────────────────────────────────────── */
 function todayStr() { return new Date().toISOString().slice(0, 10); }
 function niceDate(d) {
@@ -143,6 +170,53 @@ function niceDate(d) {
   });
 }
 function uid() { return Math.random().toString(36).slice(2, 9); }
+
+/* ── IMGBB UPLOAD (optional – for hosting character images) ───────── */
+async function uploadToImgBB(base64Data, apiKey) {
+  // Strip data URI prefix if present
+  const raw = base64Data.replace(/^data:[^;]+;base64,/, "");
+  const fd  = new FormData();
+  fd.append("image", raw);
+  const res = await fetch(`https://api.imgbb.com/1/upload?key=${encodeURIComponent(apiKey)}`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!res.ok) throw new Error(`ImgBB upload failed: HTTP ${res.status}`);
+  const data = await res.json();
+  if (!data.success) throw new Error("ImgBB upload error: " + (data.error?.message || "unknown"));
+  return data.data.url; // permanent public URL
+}
+
+/* ── NANOBANANA VIDEO API ─────────────────────────────────────────── */
+// Submit an image-to-video job. Returns { success, video_id, video_url, ... }
+async function callNanoBananaImageToVideo(imageUrl, prompt, apiKey, durationSec = 8) {
+  const res = await fetch("https://nanobananavideo.com/api/v1/image-to-video.php", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": apiKey.trim() },
+    body: JSON.stringify({
+      image_urls: [imageUrl],
+      prompt,
+      resolution: "1080p",
+      duration: Math.min(Math.max(durationSec, 3), 12),
+      aspect_ratio: "9:16",
+    }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Nanobanana HTTP ${res.status}: ${data.error || res.statusText}`);
+  if (!data.success) throw new Error("Nanobanana error: " + (data.error || "Unknown error"));
+  return data; // { success, video_id, video_url, thumbnail_url, credits_used }
+}
+
+// Poll job status. Returns { success, status: "queued"|"processing"|"completed"|"failed", video_url, ... }
+async function checkNanoBananaStatus(videoId, apiKey) {
+  const res = await fetch(
+    `https://nanobananavideo.com/api/v1/video-status.php?video_id=${videoId}`,
+    { headers: { "X-API-Key": apiKey.trim() } }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Status check HTTP ${res.status}`);
+  return data;
+}
 
 /* ── GEMINI API ───────────────────────────────────────────────────── */
 async function callGemini(systemPrompt, userPrompt, maxTokens = 8192) {
@@ -287,6 +361,21 @@ CONTENT PHILOSOPHY:
 //     body: string,   (3-45s with [visual cues])
 //     cta:  string    (45-60s)
 //   },
+//   ugcDirection: {
+//     characterSetup: string,  (how actor looks/is dressed)
+//     openingAction: string,   (first 3s physical action)
+//     handMovements: string,   (detailed gesture cues)
+//     facialExpressions: string, (expression shifts)
+//     productInteraction: string, (how to handle product/phone)
+//     cameraTechnique: string, (angles, proximity, movement)
+//   },
+//   musicDirection: {
+//     genre: string,
+//     tempo: string,
+//     mood: string,
+//     soundDesign: string,
+//     references: string,
+//   },
 //   visualStyle: string,
 //   audioSuggestion: string,
 //   hashtags: string,
@@ -413,28 +502,98 @@ function CopyButton({ text, label = "Copy Script" }) {
    ⚠️  MUST be a proper component (not inline in .map()) so useState is valid.
    ════════════════════════════════════════════════════════════════════ */
 const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen]             = useState(false);
+  const [showVideoModal, setShowVideoModal] = useState(false);
+  const [selectedChar, setSelectedChar]     = useState(null);
+  const [genVideo, setGenVideo]     = useState(false);
+  const [videoMsg, setVideoMsg]     = useState("");
+  const [videoErr, setVideoErr]     = useState("");
+  const [videoJob, setVideoJob]     = useState(null); // {id, status, videoUrl}
 
   const isIG    = concept.platform === "Instagram Reel";
   const isYT    = concept.platform === "YouTube Short";
   const pColor  = isIG ? "#e1306c" : isYT ? "#ff4444" : "#69c9d0";
   const pIcon   = isIG ? "🎬" : isYT ? "📹" : "🎵";
 
-  // Full script text used for copy / Higgsfield
   const fullScript = [
     `HOOK (0–3s):\n${concept.script?.hook || concept.hook || ""}`,
     `\nBODY (3–45s):\n${concept.script?.body || ""}`,
     `\nCTA (45–60s):\n${concept.script?.cta || ""}`,
   ].join("\n");
 
-  const higgsPrompt = encodeURIComponent(
-    `Create a UGC-style talking head short-form video for ${concept.platform}.\n` +
-    `Title: ${concept.title}\n` +
-    `Visual style: ${concept.visualStyle || "talking head"}\n` +
-    `${fullScript}\n` +
-    `Audio style: ${concept.audioSuggestion || "trending audio"}`
-  );
-  const higgsUrl = `https://higgsfield.ai/flow/builder?prompt=${higgsPrompt}`;
+  // Build a hyper-detailed UGC prompt for Nanobanana — raw iPhone feel, NOT cinematic
+  function buildNanoBananaPrompt(char) {
+    const d = concept.ugcDirection || {};
+    const m = concept.musicDirection || {};
+    return [
+      `Raw authentic UGC video, vertical 9:16, shot handheld on an iPhone in portrait mode.`,
+      `NOT cinematic, NOT studio, NOT professional. Looks like a real person just hit record on their phone.`,
+      `Slight natural camera shake, imperfect framing, real ambient room lighting — could be kitchen, bedroom, home office, outdoors.`,
+      char.desc ? `Creator type: ${char.desc}.` : "",
+      d.characterSetup    ? `Setup: ${d.characterSetup}.`       : "",
+      d.openingAction     ? `Opens with: ${d.openingAction}.`   : "",
+      d.handMovements     ? `Hands: ${d.handMovements}.`        : "",
+      d.facialExpressions ? `Face: ${d.facialExpressions}.`     : "",
+      d.productInteraction? `Phone/product: ${d.productInteraction}.` : "",
+      d.cameraTechnique   ? `Shot style: ${d.cameraTechnique}.` : "",
+      `Speaking directly to camera like a voice note or casual TikTok. Natural pauses, real expressions.`,
+      `Script hook: "${concept.hook}".`,
+      m.genre             ? `Background audio vibe: ${m.genre}.` : "",
+      m.mood              ? `Energy: ${m.mood}.`                  : "",
+      `No color grading, no lens flares, no bokeh effects. Raw, unfiltered, genuine — like someone filmed this in 30 seconds before posting it.`,
+    ].filter(Boolean).join(" ");
+  }
+
+  async function handleGenerateVideo() {
+    const s    = loadSettings();
+    const key  = s.nanobananApiKey?.trim();
+    if (!key) { setVideoErr("Add your Nanobanana API key in ⚙️ Settings → AI first."); return; }
+    const char = selectedChar;
+    if (!char)          { setVideoErr("Select a character first."); return; }
+    if (!char.publicUrl){ setVideoErr("Character has no public image URL. Edit the character and add one."); return; }
+
+    setGenVideo(true);
+    setVideoErr("");
+    setVideoMsg("Submitting to Nanobanana…");
+
+    try {
+      const prompt = buildNanoBananaPrompt(char);
+      const result = await callNanoBananaImageToVideo(char.publicUrl, prompt, key, 8);
+
+      const job = {
+        id:          uid(),
+        nbVideoId:   String(result.video_id),
+        conceptId:   concept.id,
+        title:       concept.title,
+        characterId: char.id,
+        charName:    char.name,
+        status:      result.video_url ? "completed" : "processing",
+        videoUrl:    result.video_url    || "",
+        thumbUrl:    result.thumbnail_url|| "",
+        prompt,
+        createdAt:   new Date().toISOString(),
+        error:       "",
+      };
+      appendVideoJob(job);
+      setVideoJob(job);
+      setVideoMsg(result.video_url
+        ? "✓ Video ready!"
+        : "✓ Job submitted! Generating in background — check Videos page.");
+    } catch (err) {
+      setVideoErr(err?.message || "Video generation failed.");
+    } finally {
+      setGenVideo(false);
+    }
+  }
+
+  // On modal open, pre-select default character
+  function openModal() {
+    const chars = loadCharacters();
+    const def   = chars.find(c => c.isDefault) || chars[0] || null;
+    setSelectedChar(def);
+    setVideoMsg(""); setVideoErr(""); setVideoJob(null);
+    setShowVideoModal(true);
+  }
 
   return (
     <div className="hover-lift" style={{
@@ -447,43 +606,32 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
       {/* ── Card Header ── */}
       <div style={{ padding: "16px 18px" }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-
-          {/* Index badge */}
           <div style={{
             width: 32, height: 32, borderRadius: 9, flexShrink: 0,
-            background: `${pColor}14`,
-            border: `1px solid ${pColor}30`,
+            background: `${pColor}14`, border: `1px solid ${pColor}30`,
             display: "flex", alignItems: "center", justifyContent: "center",
             fontSize: 13, fontWeight: 800, color: pColor, marginTop: 2,
           }}>
             {index + 1}
           </div>
-
-          {/* Main info */}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 7 }}>
               <Badge color={pColor}>{pIcon} {concept.platform}</Badge>
-              {concept.angle && <Badge color="#8b5cf6">{concept.angle}</Badge>}
+              {concept.angle  && <Badge color="#8b5cf6">{concept.angle}</Badge>}
               {concept.pillar && <Badge color="#374151" small>{concept.pillar}</Badge>}
             </div>
-            <div style={{
-              fontSize: 14, fontWeight: 700, color: "#f1f5f9",
-              lineHeight: 1.4, marginBottom: 7,
-            }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", lineHeight: 1.4, marginBottom: 7 }}>
               {concept.title}
             </div>
             <div style={{
               fontSize: 12, color: "#475569", fontStyle: "italic",
               lineHeight: 1.55, fontFamily: "'DM Mono', monospace",
-              background: "rgba(0,0,0,0.25)",
-              borderLeft: `2px solid ${pColor}`,
+              background: "rgba(0,0,0,0.25)", borderLeft: `2px solid ${pColor}`,
               padding: "6px 10px", borderRadius: "0 7px 7px 0",
             }}>
               "{concept.hook}"
             </div>
           </div>
-
-          {/* Expand toggle */}
           <button
             onClick={() => setOpen(o => !o)}
             className="btn-ghost"
@@ -493,31 +641,24 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
               borderRadius: 7, padding: "6px 12px",
               color: open ? pColor : "#4b5563",
               fontSize: 11, fontWeight: 600, cursor: "pointer",
-              flexShrink: 0, transition: "all 0.15s",
-              whiteSpace: "nowrap",
+              flexShrink: 0, whiteSpace: "nowrap",
             }}>
             {open ? "▲ Less" : "▼ Script"}
           </button>
         </div>
       </div>
 
-      {/* ── Expanded Script Panel ── */}
+      {/* ── Expanded Panel ── */}
       {open && (
         <div style={{
-          borderTop: "1px solid #0e1830",
-          padding: "18px 18px 14px",
-          background: "rgba(139,92,246,0.03)",
-          animation: "fadeIn 0.2s ease",
+          borderTop: "1px solid #0e1830", padding: "18px 18px 14px",
+          background: "rgba(139,92,246,0.03)", animation: "fadeIn 0.2s ease",
         }}>
-          {/* Hook on screen */}
+          {/* On-screen text */}
           {concept.hookOnScreen && (
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#8b5cf6", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 5 }}>📺 ON-SCREEN TEXT</div>
-              <div style={{
-                fontSize: 16, fontWeight: 800, color: "#e2e8f0",
-                background: "#000", borderRadius: 7, padding: "8px 14px",
-                textAlign: "center", letterSpacing: "-0.3px",
-              }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#e2e8f0", background: "#000", borderRadius: 7, padding: "8px 14px", textAlign: "center" }}>
                 {concept.hookOnScreen}
               </div>
             </div>
@@ -525,27 +666,19 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
 
           {/* Script sections */}
           {[
-            { label: "🔴 HOOK (0–3s)",   key: "hook",  color: "#ef4444" },
-            { label: "🟡 BODY (3–45s)",  key: "body",  color: "#f59e0b" },
-            { label: "🟢 CTA (45–60s)",  key: "cta",   color: "#10b981" },
+            { label: "🔴 HOOK (0–3s)",  key: "hook", color: "#ef4444" },
+            { label: "🟡 BODY (3–45s)", key: "body", color: "#f59e0b" },
+            { label: "🟢 CTA (45–60s)", key: "cta",  color: "#10b981" },
           ].map(({ label, key, color }) => {
             const content = concept.script?.[key];
             if (!content) return null;
             return (
               <div key={key} style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color, textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>{label}</div>
                 <div style={{
-                  fontSize: 10, fontWeight: 700, color,
-                  textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6,
-                }}>
-                  {label}
-                </div>
-                <div style={{
-                  fontSize: 12, color: "#cbd5e1", lineHeight: 1.85,
-                  whiteSpace: "pre-wrap",
-                  background: "rgba(0,0,0,0.35)", borderRadius: 9,
-                  padding: "11px 14px",
-                  fontFamily: "'DM Mono', monospace",
-                  borderLeft: `2px solid ${color}40`,
+                  fontSize: 12, color: "#cbd5e1", lineHeight: 1.85, whiteSpace: "pre-wrap",
+                  background: "rgba(0,0,0,0.35)", borderRadius: 9, padding: "11px 14px",
+                  fontFamily: "'DM Mono', monospace", borderLeft: `2px solid ${color}40`,
                 }}>
                   {content}
                 </div>
@@ -553,29 +686,66 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
             );
           })}
 
+          {/* ── UGC DIRECTION ── */}
+          {concept.ugcDirection && Object.values(concept.ugcDirection).some(Boolean) && (
+            <div style={{
+              marginBottom: 14, background: "rgba(251,191,36,0.05)",
+              border: "1px solid rgba(251,191,36,0.15)", borderRadius: 10, padding: "14px",
+            }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#fbbf24", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 10 }}>
+                🎭 UGC ACTOR DIRECTION
+              </div>
+              {[
+                ["👔 Character Setup",    concept.ugcDirection.characterSetup],
+                ["🎬 Opening Action",     concept.ugcDirection.openingAction],
+                ["🤲 Hand Movements",     concept.ugcDirection.handMovements],
+                ["😄 Facial Expressions", concept.ugcDirection.facialExpressions],
+                ["📱 Product Interaction",concept.ugcDirection.productInteraction],
+                ["📷 Camera Technique",   concept.ugcDirection.cameraTechnique],
+              ].filter(([,v]) => v).map(([label, value]) => (
+                <div key={label} style={{ marginBottom: 8 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#92400e" }}>{label}: </span>
+                  <span style={{ fontSize: 11, color: "#d97706", lineHeight: 1.6 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* ── MUSIC DIRECTION ── */}
+          {concept.musicDirection && Object.values(concept.musicDirection).some(Boolean) && (
+            <div style={{
+              marginBottom: 14, background: "rgba(99,102,241,0.05)",
+              border: "1px solid rgba(99,102,241,0.15)", borderRadius: 10, padding: "14px",
+            }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#818cf8", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 10 }}>
+                🎵 MUSIC DIRECTION
+              </div>
+              {[
+                ["🎸 Genre",       concept.musicDirection.genre],
+                ["🥁 Tempo",       concept.musicDirection.tempo],
+                ["💫 Mood",        concept.musicDirection.mood],
+                ["🔊 Sound Design",concept.musicDirection.soundDesign],
+                ["🎧 References",  concept.musicDirection.references],
+              ].filter(([,v]) => v).map(([label, value]) => (
+                <div key={label} style={{ marginBottom: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#4338ca" }}>{label}: </span>
+                  <span style={{ fontSize: 11, color: "#6366f1", lineHeight: 1.6 }}>{value}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* Meta row */}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
-            {concept.visualStyle && (
-              <div style={{ fontSize: 11, color: "#374151" }}>
-                <span style={{ color: "#4b5563" }}>📹 Style: </span>
-                <span style={{ color: "#64748b" }}>{concept.visualStyle}</span>
-              </div>
-            )}
-            {concept.audioSuggestion && (
-              <div style={{ fontSize: 11, color: "#374151" }}>
-                <span style={{ color: "#4b5563" }}>🎵 Audio: </span>
-                <span style={{ color: "#64748b" }}>{concept.audioSuggestion}</span>
-              </div>
-            )}
+            {concept.visualStyle    && <div style={{ fontSize: 11, color: "#374151" }}><span style={{ color: "#4b5563" }}>📹 Style: </span><span style={{ color: "#64748b" }}>{concept.visualStyle}</span></div>}
+            {concept.audioSuggestion&& <div style={{ fontSize: 11, color: "#374151" }}><span style={{ color: "#4b5563" }}>🎵 Audio: </span><span style={{ color: "#64748b" }}>{concept.audioSuggestion}</span></div>}
           </div>
 
           {/* Hashtags */}
           {concept.hashtags && (
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 10, color: "#374151", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 5 }}>🏷 HASHTAGS</div>
-              <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.7, fontFamily: "'DM Mono', monospace" }}>
-                {concept.hashtags}
-              </div>
+              <div style={{ fontSize: 11, color: "#475569", lineHeight: 1.7, fontFamily: "'DM Mono', monospace" }}>{concept.hashtags}</div>
             </div>
           )}
 
@@ -583,18 +753,19 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
           <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center", paddingTop: 4 }}>
             <CopyButton text={fullScript} label="Copy Script" />
 
-            <a
-              href={higgsUrl} target="_blank" rel="noreferrer"
+            {/* 🍌 Nanobanana Generate Button */}
+            <button
+              onClick={openModal}
               style={{
-                background: "linear-gradient(135deg,#7c3aed,#4f46e5)",
+                background: "linear-gradient(135deg, #f59e0b, #f97316)",
                 border: "none", borderRadius: 7,
                 padding: "7px 14px", color: "white",
                 fontSize: 11, fontWeight: 700, cursor: "pointer",
                 display: "inline-flex", alignItems: "center", gap: 5,
-                boxShadow: "0 3px 12px rgba(124,58,237,.35)",
+                boxShadow: "0 3px 12px rgba(245,158,11,.4)",
               }}>
-              🎬 Open in Higgsfield ↗
-            </a>
+              🍌 Generate UGC Video
+            </button>
 
             <CopyButton text={concept.hashtags} label="Copy Hashtags" />
 
@@ -605,29 +776,182 @@ const ConceptCard = memo(function ConceptCard({ concept, index, onRemove }) {
                 style={{
                   marginLeft: "auto", background: "transparent",
                   border: "1px solid #1a2540", borderRadius: 7,
-                  padding: "7px 12px", color: "#374151",
-                  fontSize: 11, cursor: "pointer",
+                  padding: "7px 12px", color: "#374151", fontSize: 11, cursor: "pointer",
                 }}>
                 × Dismiss
               </button>
             )}
           </div>
 
-          {/* Usage tip */}
+          {/* How to use tip */}
           <div style={{
             marginTop: 12, padding: "10px 12px",
             background: "rgba(0,0,0,0.3)", borderRadius: 8,
             fontSize: 11, color: "#374151", lineHeight: 1.65,
           }}>
-            💡 <strong style={{ color: "#4b5563" }}>How to film:</strong>{" "}
-            Copy script → Open Higgsfield → Choose avatar or upload photo → Paste script →
-            Pick motion preset (Selfie / Happy / Outfit Check) → Generate UGC video.
+            💡 <strong style={{ color: "#4b5563" }}>Workflow:</strong>{" "}
+            Click "Generate UGC Video" → select a character → Nanobanana renders a raw iPhone-style UGC video using your character photo + full direction brief.
+            Output looks like a real person hit record and posted it. Videos render on Nanobanana's servers in the background.
+          </div>
+        </div>
+      )}
+
+      {/* ── VIDEO GENERATION MODAL ── */}
+      {showVideoModal && (
+        <div
+          onClick={e => { if (e.target === e.currentTarget) setShowVideoModal(false); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 9000,
+            background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)",
+            display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+          }}>
+          <div style={{
+            background: "#080b18", border: "1px solid #1a2540",
+            borderRadius: 18, padding: 28, width: "100%", maxWidth: 500,
+            animation: "fadeUp 0.25s ease",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: "#f1f5f9" }}>🍌 Generate UGC Video</div>
+              <button onClick={() => setShowVideoModal(false)} style={{ background: "none", border: "none", color: "#374151", cursor: "pointer", fontSize: 20 }}>×</button>
+            </div>
+
+            {/* Concept info */}
+            <div style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.15)", borderRadius: 10, padding: "10px 14px", marginBottom: 20, fontSize: 12, color: "#92400e" }}>
+              <strong style={{ color: "#fbbf24" }}>{concept.title}</strong><br/>
+              Hook: <em style={{ color: "#d97706" }}>"{concept.hook}"</em>
+            </div>
+
+            {/* Character selector */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 10 }}>
+                Select UGC Character
+              </div>
+              <CharacterSelector
+                selected={selectedChar}
+                onSelect={setSelectedChar}
+              />
+            </div>
+
+            {/* API key reminder */}
+            {!loadSettings().nanobananApiKey && (
+              <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 11, color: "#f87171" }}>
+                ⚠️ Nanobanana API key not set. Go to ⚙️ Settings → AI to add it.
+              </div>
+            )}
+
+            {/* Status messages */}
+            {videoMsg && !videoErr && (
+              <div style={{ background: "rgba(16,185,129,0.06)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#10b981" }}>
+                {videoMsg}
+                {videoJob?.videoUrl && (
+                  <div style={{ marginTop: 8 }}>
+                    <a href={videoJob.videoUrl} target="_blank" rel="noreferrer" style={{ color: "#6ee7b7", fontWeight: 700, textDecoration: "underline" }}>
+                      ▶ Watch Video ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            )}
+            {videoErr && (
+              <div style={{ background: "rgba(239,68,68,0.06)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#f87171" }}>
+                ✗ {videoErr}
+              </div>
+            )}
+
+            {/* Generate button */}
+            {!videoJob && (
+              <button
+                onClick={handleGenerateVideo}
+                disabled={genVideo || !selectedChar}
+                style={{
+                  width: "100%",
+                  background: genVideo || !selectedChar
+                    ? "#111827"
+                    : "linear-gradient(135deg, #f59e0b, #f97316)",
+                  border: "none", borderRadius: 10, padding: "13px",
+                  color: genVideo || !selectedChar ? "#374151" : "white",
+                  fontSize: 14, fontWeight: 700,
+                  cursor: genVideo || !selectedChar ? "not-allowed" : "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                  boxShadow: genVideo || !selectedChar ? "none" : "0 4px 20px rgba(245,158,11,.4)",
+                }}>
+                {genVideo ? <><Spinner size={14} /> Submitting to Nanobanana…</> : "🍌 Generate Realistic UGC Video"}
+              </button>
+            )}
+            {videoJob && (
+              <button
+                onClick={() => { setShowVideoModal(false); window._fcr_setPage && window._fcr_setPage("videos"); }}
+                style={{
+                  width: "100%", background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)",
+                  borderRadius: 10, padding: "13px", color: "#818cf8",
+                  fontSize: 13, fontWeight: 700, cursor: "pointer",
+                }}>
+                📊 View All Video Jobs →
+              </button>
+            )}
           </div>
         </div>
       )}
     </div>
   );
 });
+
+/* ── CHARACTER SELECTOR (inline, used inside modal) ─────────────────── */
+function CharacterSelector({ selected, onSelect }) {
+  const chars = loadCharacters();
+  if (chars.length === 0) {
+    return (
+      <div style={{
+        background: "rgba(99,102,241,0.06)", border: "1px dashed rgba(99,102,241,0.25)",
+        borderRadius: 10, padding: "16px", textAlign: "center", fontSize: 12, color: "#374151",
+      }}>
+        No characters yet.{" "}
+        <button
+          onClick={() => window._fcr_setPage && window._fcr_setPage("characters")}
+          style={{ background: "none", border: "none", color: "#818cf8", cursor: "pointer", fontWeight: 700, fontSize: 12 }}>
+          Add one in Characters →
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7, maxHeight: 200, overflowY: "auto" }}>
+      {chars.map(c => (
+        <button
+          key={c.id}
+          onClick={() => onSelect(c)}
+          style={{
+            display: "flex", alignItems: "center", gap: 12,
+            padding: "10px 14px", borderRadius: 10,
+            background: selected?.id === c.id ? "rgba(245,158,11,0.1)" : "#0a0d1c",
+            border: `1px solid ${selected?.id === c.id ? "rgba(245,158,11,0.35)" : "#111827"}`,
+            cursor: "pointer", textAlign: "left",
+          }}>
+          {/* Avatar */}
+          <div style={{
+            width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+            background: "#111827", overflow: "hidden",
+            border: "1px solid #1a2540",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            {c.base64
+              ? <img src={c.base64} alt={c.name} style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+              : <span style={{ fontSize: 18 }}>👤</span>
+            }
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: selected?.id === c.id ? "#fbbf24" : "#f1f5f9" }}>
+              {c.name} {c.isDefault && <span style={{ fontSize: 9, color: "#8b5cf6", marginLeft: 4 }}>DEFAULT</span>}
+            </div>
+            {c.desc && <div style={{ fontSize: 11, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.desc}</div>}
+            {!c.publicUrl && <div style={{ fontSize: 10, color: "#ef4444" }}>⚠️ No public URL — video gen unavailable</div>}
+          </div>
+          {selected?.id === c.id && <span style={{ color: "#fbbf24", fontSize: 14 }}>✓</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 /* ════════════════════════════════════════════════════════════════════
    VIDEO ANALYZER COMPONENT
@@ -1377,6 +1701,24 @@ body (3–45s):  Natural speech. Include [visual cues in brackets]. Use specific
 cta  (45–60s): Soft, conversational. Never "like and subscribe." Ask a question or give a clear next step.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+UGC DIRECTION REQUIREMENTS (for every concept):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For ugcDirection, describe EXACTLY what the UGC creator/actor should physically do to make this look like an authentic viral video:
+- characterSetup: clothing style, background setting, lighting, props on desk/hands
+- openingAction: the EXACT physical action in first 3 seconds (picking up phone, reaction face, pointing at camera)
+- handMovements: detailed hand/gesture choreography synced to script moments
+- facialExpressions: specific expression beats — surprise, concern, joy, disbelief — and WHEN they happen
+- productInteraction: how/when to show the phone screen, app, or gesture at a device naturally
+- cameraTechnique: recommended POV, distance (extreme close-up face, mid-shot, wide), handheld shake level
+
+MUSIC DIRECTION (hyper-specific):
+- genre: exact subgenre (e.g. "lo-fi bedroom pop", "UK drill instrumental", "motivational cinematic")
+- tempo: BPM range and feel (e.g. "85-95 BPM, chill and unhurried")
+- mood: emotional arc across the video
+- soundDesign: silence beats, sound effects, voice-over breathing room
+- references: name 2-3 real songs or artists as sonic references
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fences, no extra text.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [
@@ -1391,6 +1733,21 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
       "hook": "full 0–3s spoken script",
       "body": "full 3–45s script with [visual direction cues] throughout",
       "cta": "full 45–60s CTA script"
+    },
+    "ugcDirection": {
+      "characterSetup": "outfit, background, lighting, props",
+      "openingAction": "exact physical action in first 3 seconds",
+      "handMovements": "gesture choreography synced to script",
+      "facialExpressions": "expression beats and timing",
+      "productInteraction": "how to naturally show or use the product/app",
+      "cameraTechnique": "distance, angle, movement style"
+    },
+    "musicDirection": {
+      "genre": "specific subgenre",
+      "tempo": "BPM range and feel",
+      "mood": "emotional arc",
+      "soundDesign": "sfx, silence cues",
+      "references": "2-3 real song/artist references"
     },
     "visualStyle": "talking head | POV | walk-and-talk | text-on-screen | B-roll with VO",
     "audioSuggestion": "specific trending audio style or description",
@@ -1423,6 +1780,21 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
             hook: c.script?.hook || c.hook  || "",
             body: c.script?.body            || "",
             cta:  c.script?.cta             || "",
+          },
+          ugcDirection: {
+            characterSetup:       c.ugcDirection?.characterSetup       || "",
+            openingAction:        c.ugcDirection?.openingAction        || "",
+            handMovements:        c.ugcDirection?.handMovements        || "",
+            facialExpressions:    c.ugcDirection?.facialExpressions    || "",
+            productInteraction:   c.ugcDirection?.productInteraction   || "",
+            cameraTechnique:      c.ugcDirection?.cameraTechnique      || "",
+          },
+          musicDirection: {
+            genre:       c.musicDirection?.genre       || "",
+            tempo:       c.musicDirection?.tempo       || "",
+            mood:        c.musicDirection?.mood        || "",
+            soundDesign: c.musicDirection?.soundDesign || "",
+            references:  c.musicDirection?.references  || "",
           },
           visualStyle:     c.visualStyle    || "talking head",
           audioSuggestion: c.audioSuggestion|| "",
@@ -1564,6 +1936,21 @@ CRITICAL OUTPUT RULES:
           hook: c.script?.hook || c.hook || "",
           body: c.script?.body           || "",
           cta:  c.script?.cta            || "",
+        },
+        ugcDirection: {
+          characterSetup:       c.ugcDirection?.characterSetup       || "",
+          openingAction:        c.ugcDirection?.openingAction        || "",
+          handMovements:        c.ugcDirection?.handMovements        || "",
+          facialExpressions:    c.ugcDirection?.facialExpressions    || "",
+          productInteraction:   c.ugcDirection?.productInteraction   || "",
+          cameraTechnique:      c.ugcDirection?.cameraTechnique      || "",
+        },
+        musicDirection: {
+          genre:       c.musicDirection?.genre       || "",
+          tempo:       c.musicDirection?.tempo       || "",
+          mood:        c.musicDirection?.mood        || "",
+          soundDesign: c.musicDirection?.soundDesign || "",
+          references:  c.musicDirection?.references  || "",
         },
         visualStyle:     c.visualStyle    || "talking head",
         audioSuggestion: c.audioSuggestion|| "",
@@ -2426,6 +2813,7 @@ function SettingsPage() {
         {/* ── AI TAB ── */}
         {tab === "ai" && (
           <div>
+            {/* ── Gemini ── */}
             <div style={{
               fontSize: 12, color: "#374151", marginBottom: 18, lineHeight: 1.7,
               padding: "10px 14px", background: "rgba(99,102,241,0.05)",
@@ -2457,39 +2845,101 @@ function SettingsPage() {
               />
               <button
                 onClick={() => setShowKey(v => !v)}
-                style={{
-                  position: "absolute", right: 10, top: "50%",
-                  transform: "translateY(-50%)",
-                  background: "none", border: "none",
-                  color: "#374151", cursor: "pointer", fontSize: 14,
-                }}>
+                style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#374151", cursor: "pointer", fontSize: 14 }}>
                 {showKey ? "🙈" : "👁"}
               </button>
             </div>
 
-            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 28 }}>
               <button
                 onClick={testKey}
                 disabled={testing || !s.geminiApiKey}
                 style={{
-                  background: "#0b1020", border: "1px solid #1a2540",
-                  borderRadius: 7, padding: "7px 16px",
-                  color: s.geminiApiKey ? "#94a3b8" : "#374151",
-                  fontSize: 12, cursor: s.geminiApiKey ? "pointer" : "not-allowed",
+                  background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "7px 16px",
+                  color: s.geminiApiKey ? "#94a3b8" : "#374151", fontSize: 12,
+                  cursor: s.geminiApiKey ? "pointer" : "not-allowed",
                   display: "flex", alignItems: "center", gap: 6,
                 }}>
                 {testing ? <><Spinner size={12} /> Testing…</> : "Test Connection"}
               </button>
               {testResult && (
-                <span style={{
-                  fontSize: 12,
-                  color: testResult.ok ? "#10b981" : "#ef4444",
-                  fontWeight: 600,
-                }}>
+                <span style={{ fontSize: 12, color: testResult.ok ? "#10b981" : "#ef4444", fontWeight: 600 }}>
                   {testResult.msg}
                 </span>
               )}
             </div>
+
+            {/* ── Nanobanana ── */}
+            <div style={{ height: 1, background: "#0e1830", marginBottom: 22 }}/>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#f59e0b", marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+              🍌 Nanobanana API — UGC Video Generation
+            </div>
+            <div style={{
+              background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)",
+              borderRadius: 10, padding: "14px 16px", marginBottom: 16, fontSize: 12, color: "#92400e", lineHeight: 1.75,
+            }}>
+              <strong style={{ color: "#fbbf24", display: "block", marginBottom: 6 }}>How to get your Nanobanana API key:</strong>
+              <ol style={{ paddingLeft: 16, margin: 0 }}>
+                <li>Go to <a href="https://nanobananavideo.com" target="_blank" style={{ color: "#fbbf24" }}>nanobananavideo.com</a> and sign up / log in</li>
+                <li>Navigate to <strong style={{ color: "#fbbf24" }}>dashboard.php</strong> → API section</li>
+                <li>Click <strong style={{ color: "#fbbf24" }}>"Create API Key"</strong> or <strong style={{ color: "#fbbf24" }}>"Regenerate API Key"</strong></li>
+                <li>Copy it and paste it below (it's only shown once)</li>
+              </ol>
+              <div style={{ marginTop: 8, color: "#78350f" }}>
+                Cost: $0.03/s · 1080p 8s video ≈ $0.24 · Rate limit: 10 videos/30 min
+              </div>
+            </div>
+
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Nanobanana API Key
+            </label>
+            <input
+              type="password"
+              value={s.nanobananApiKey || ""}
+              onChange={e => update("nanobananApiKey", e.target.value)}
+              placeholder="nb_live_..."
+              style={{
+                width: "100%", background: "#060912",
+                border: "1px solid #111827", borderRadius: 8,
+                padding: "9px 12px", color: "#f1f5f9", fontSize: 13,
+                fontFamily: "'DM Mono', monospace", marginBottom: 22,
+              }}
+            />
+
+            {/* ── ImgBB (optional) ── */}
+            <div style={{ height: 1, background: "#0e1830", marginBottom: 22 }}/>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#94a3b8", marginBottom: 12 }}>
+              🖼 ImgBB API — Auto-host Character Images (Optional)
+            </div>
+            <div style={{
+              background: "rgba(99,102,241,0.05)", border: "1px solid rgba(99,102,241,0.15)",
+              borderRadius: 10, padding: "14px 16px", marginBottom: 16, fontSize: 12, color: "#374151", lineHeight: 1.75,
+            }}>
+              <strong style={{ color: "#818cf8", display: "block", marginBottom: 6 }}>How to get your ImgBB API key (free):</strong>
+              <ol style={{ paddingLeft: 16, margin: 0, color: "#4b5563" }}>
+                <li>Go to <a href="https://imgbb.com" target="_blank" style={{ color: "#818cf8" }}>imgbb.com</a> → sign up for a free account</li>
+                <li>Go to <a href="https://api.imgbb.com" target="_blank" style={{ color: "#818cf8" }}>api.imgbb.com</a></li>
+                <li>Click <strong style={{ color: "#818cf8" }}>"Get API key"</strong> and copy it</li>
+                <li>Paste below — character images you upload will be auto-hosted with a permanent public URL</li>
+              </ol>
+              <div style={{ marginTop: 8 }}>Without this, you'll need to provide a public URL for each character manually.</div>
+            </div>
+
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              ImgBB API Key (Optional)
+            </label>
+            <input
+              type="password"
+              value={s.imgbbApiKey || ""}
+              onChange={e => update("imgbbApiKey", e.target.value)}
+              placeholder="your-imgbb-api-key"
+              style={{
+                width: "100%", background: "#060912",
+                border: "1px solid #111827", borderRadius: 8,
+                padding: "9px 12px", color: "#f1f5f9", fontSize: 13,
+                fontFamily: "'DM Mono', monospace",
+              }}
+            />
           </div>
         )}
 
@@ -3124,6 +3574,580 @@ HOOK STYLES:
 }
 
 /* ════════════════════════════════════════════════════════════════════
+   CHARACTERS PAGE — Manage UGC actor characters
+   ════════════════════════════════════════════════════════════════════ */
+function CharactersPage() {
+  const [chars, setChars]       = useState(() => loadCharacters());
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing]   = useState(null); // char being edited
+  const [toast, setToast]       = useState(null);
+  const [uploading, setUploading] = useState(false);
+
+  // Form state
+  const [fName, setFName]           = useState("");
+  const [fDesc, setFDesc]           = useState("");
+  const [fPublicUrl, setFPublicUrl] = useState("");
+  const [fBase64, setFBase64]       = useState(""); // local preview
+  const [fIsDefault, setFIsDefault] = useState(false);
+  const fileInputRef = useRef(null);
+
+  function showToast(msg, type = "success") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3200);
+  }
+
+  function openAdd() {
+    setEditing(null);
+    setFName(""); setFDesc(""); setFPublicUrl(""); setFBase64("");
+    setFIsDefault(chars.length === 0);
+    setShowForm(true);
+  }
+
+  function openEdit(c) {
+    setEditing(c);
+    setFName(c.name); setFDesc(c.desc || ""); setFPublicUrl(c.publicUrl || "");
+    setFBase64(c.base64 || ""); setFIsDefault(!!c.isDefault);
+    setShowForm(true);
+  }
+
+  function cancelForm() { setShowForm(false); setEditing(null); }
+
+  function handleImageFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { showToast("Please select an image file.", "error"); return; }
+    if (file.size > 5 * 1024 * 1024) { showToast("Image must be under 5MB.", "error"); return; }
+    const reader = new FileReader();
+    reader.onload = ev => setFBase64(ev.target.result);
+    reader.readAsDataURL(file);
+  }
+
+  async function saveChar() {
+    if (!fName.trim()) { showToast("Name is required.", "error"); return; }
+
+    setUploading(true);
+    let finalPublicUrl = fPublicUrl.trim();
+
+    // Auto-upload to ImgBB if key present and we have a base64 but no URL
+    if (fBase64 && !finalPublicUrl) {
+      const s = loadSettings();
+      if (s.imgbbApiKey?.trim()) {
+        try {
+          showToast("Uploading image to ImgBB…");
+          finalPublicUrl = await uploadToImgBB(fBase64, s.imgbbApiKey.trim());
+        } catch (err) {
+          showToast("ImgBB upload failed: " + err.message + ". Add URL manually.", "error");
+          setUploading(false);
+          return;
+        }
+      }
+    }
+
+    const newChar = {
+      id:        editing?.id || uid(),
+      name:      fName.trim(),
+      desc:      fDesc.trim(),
+      publicUrl: finalPublicUrl,
+      base64:    fBase64,
+      isDefault: fIsDefault,
+      createdAt: editing?.createdAt || new Date().toISOString(),
+    };
+
+    let updated;
+    if (editing) {
+      updated = chars.map(c => c.id === editing.id ? newChar : c);
+    } else {
+      updated = [...chars, newChar];
+    }
+
+    // Ensure only one default
+    if (fIsDefault) {
+      updated = updated.map(c => ({ ...c, isDefault: c.id === newChar.id }));
+    }
+
+    saveCharacters(updated);
+    setChars(updated);
+    showToast(editing ? "Character updated!" : "Character added!");
+    setShowForm(false);
+    setEditing(null);
+    setUploading(false);
+  }
+
+  function deleteChar(id) {
+    if (!window.confirm("Delete this character?")) return;
+    const updated = chars.filter(c => c.id !== id);
+    saveCharacters(updated);
+    setChars(updated);
+    showToast("Character deleted.");
+  }
+
+  function setDefault(id) {
+    const updated = chars.map(c => ({ ...c, isDefault: c.id === id }));
+    saveCharacters(updated);
+    setChars(updated);
+    showToast("Default character updated.");
+  }
+
+  return (
+    <div style={{ padding: 28, fontFamily: "'DM Sans', sans-serif", height: "100%", overflowY: "auto" }}>
+      {toast && <Toast {...toast} />}
+
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 24, gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#f1f5f9", letterSpacing: "-0.5px", marginBottom: 5, fontFamily: "'Bricolage Grotesque', sans-serif" }}>
+            UGC Characters
+          </h1>
+          <p style={{ fontSize: 13, color: "#374151", lineHeight: 1.6 }}>
+            Upload and manage your UGC actor characters. These are used by Nanobanana to generate hyper-realistic videos.
+          </p>
+        </div>
+        <button
+          onClick={openAdd}
+          style={{
+            background: "linear-gradient(135deg,#f59e0b,#f97316)",
+            border: "none", borderRadius: 10, padding: "10px 20px",
+            color: "white", fontSize: 13, fontWeight: 700,
+            cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0,
+            boxShadow: "0 4px 16px rgba(245,158,11,.35)",
+          }}>
+          + Add Character
+        </button>
+      </div>
+
+      {/* ImgBB tip */}
+      {!loadSettings().imgbbApiKey && chars.length === 0 && (
+        <div style={{
+          background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.2)",
+          borderRadius: 10, padding: "14px 16px", marginBottom: 20, fontSize: 12, color: "#6366f1", lineHeight: 1.7,
+        }}>
+          💡 <strong>Tip:</strong> Add an ImgBB API key in ⚙️ Settings → AI to auto-host character images and get public URLs automatically.
+          Or paste any publicly accessible image URL (Google Drive, Dropbox, Cloudinary, etc.) when adding a character.
+        </div>
+      )}
+
+      {/* Add/Edit Form */}
+      {showForm && (
+        <div style={{
+          background: "#0a0d1c", border: "1px solid rgba(245,158,11,0.25)",
+          borderRadius: 14, padding: 24, marginBottom: 24, animation: "fadeUp 0.2s ease",
+        }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 18 }}>
+            {editing ? "✏️ Edit Character" : "➕ Add New Character"}
+          </div>
+
+          {/* Name */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>Name *</label>
+            <input
+              value={fName} onChange={e => setFName(e.target.value)}
+              placeholder="e.g. Sarah — Career Coach Persona"
+              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13 }}
+            />
+          </div>
+
+          {/* Description */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>Character Description</label>
+            <textarea
+              rows={2} value={fDesc} onChange={e => setFDesc(e.target.value)}
+              placeholder="e.g. 28-year-old career coach, warm and credible, works from a home office"
+              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, resize: "vertical" }}
+            />
+          </div>
+
+          {/* Image upload */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>Character Image</label>
+            <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
+              {/* Preview */}
+              <div style={{
+                width: 80, height: 80, borderRadius: 12, flexShrink: 0,
+                background: "#0a0d1c", border: "1px solid #1a2540",
+                overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                {fBase64
+                  ? <img src={fBase64} alt="preview" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+                  : <span style={{ fontSize: 28 }}>👤</span>
+                }
+              </div>
+              <div style={{ flex: 1 }}>
+                <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageFile} style={{ display: "none" }}/>
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  style={{
+                    background: "#0b1020", border: "1px solid #1a2540", borderRadius: 8,
+                    padding: "8px 16px", color: "#94a3b8", fontSize: 12, cursor: "pointer", marginBottom: 8,
+                    display: "flex", alignItems: "center", gap: 6,
+                  }}>
+                  📁 Upload Image (stored locally for preview)
+                </button>
+                <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.6 }}>
+                  Upload for preview. For video generation, you need a public URL below.
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Public URL */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 11, color: "#374151", display: "block", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600 }}>
+              Public Image URL <span style={{ color: "#ef4444" }}>*required for video generation*</span>
+            </label>
+            <input
+              value={fPublicUrl} onChange={e => setFPublicUrl(e.target.value)}
+              placeholder="https://i.ibb.co/... or https://drive.google.com/..."
+              style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "9px 12px", color: "#f1f5f9", fontSize: 13, fontFamily: "'DM Mono', monospace" }}
+            />
+            <div style={{ fontSize: 11, color: "#374151", marginTop: 4, lineHeight: 1.6 }}>
+              {loadSettings().imgbbApiKey
+                ? "✓ ImgBB key detected — auto-upload will happen if you leave this blank."
+                : "💡 Add ImgBB API key in Settings for auto-hosting, or paste a public URL from Google Drive, Cloudinary, Imgur, etc."
+              }
+            </div>
+          </div>
+
+          {/* Default toggle */}
+          <div style={{ marginBottom: 20, display: "flex", alignItems: "center", gap: 10 }}>
+            <input
+              type="checkbox" id="isDefaultChk"
+              checked={fIsDefault} onChange={e => setFIsDefault(e.target.checked)}
+              style={{ width: 16, height: 16, cursor: "pointer" }}
+            />
+            <label htmlFor="isDefaultChk" style={{ fontSize: 13, color: "#94a3b8", cursor: "pointer" }}>
+              Set as default character (auto-selected when generating videos)
+            </label>
+          </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <button
+              onClick={saveChar}
+              disabled={uploading || !fName.trim()}
+              style={{
+                background: uploading || !fName.trim() ? "#111827" : "linear-gradient(135deg,#f59e0b,#f97316)",
+                border: "none", borderRadius: 9, padding: "11px 24px",
+                color: uploading || !fName.trim() ? "#374151" : "white",
+                fontSize: 13, fontWeight: 700,
+                cursor: uploading || !fName.trim() ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", gap: 8,
+              }}>
+              {uploading ? <><Spinner size={13}/> Saving…</> : (editing ? "✓ Update Character" : "✓ Add Character")}
+            </button>
+            <button
+              onClick={cancelForm}
+              style={{ background: "transparent", border: "1px solid #1a2540", borderRadius: 9, padding: "11px 18px", color: "#374151", fontSize: 13, cursor: "pointer" }}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Character grid */}
+      {chars.length === 0 && !showForm ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "#374151" }}>
+          <div style={{ fontSize: 52, marginBottom: 16 }}>👥</div>
+          <div style={{ fontSize: 16, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>No characters yet</div>
+          <div style={{ fontSize: 13, maxWidth: 380, margin: "0 auto", lineHeight: 1.75 }}>
+            Add a UGC character to generate hyper-realistic videos with Nanobanana.
+            Each character is an AI actor persona with a reference photo.
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
+          {chars.map(c => (
+            <div
+              key={c.id}
+              className="hover-lift"
+              style={{
+                background: "#090d1b", border: `1px solid ${c.isDefault ? "rgba(245,158,11,0.3)" : "#0e1830"}`,
+                borderRadius: 14, overflow: "hidden",
+              }}>
+              {/* Image header */}
+              <div style={{
+                height: 140, background: "#0a0d1c", position: "relative",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                overflow: "hidden",
+              }}>
+                {c.base64 || c.publicUrl ? (
+                  <img
+                    src={c.base64 || c.publicUrl}
+                    alt={c.name}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                ) : (
+                  <span style={{ fontSize: 52, opacity: 0.3 }}>👤</span>
+                )}
+                {c.isDefault && (
+                  <div style={{
+                    position: "absolute", top: 10, right: 10,
+                    background: "rgba(245,158,11,0.9)", borderRadius: 20,
+                    padding: "2px 10px", fontSize: 10, fontWeight: 700, color: "#000",
+                  }}>
+                    DEFAULT
+                  </div>
+                )}
+              </div>
+
+              {/* Info */}
+              <div style={{ padding: "14px 16px" }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9", marginBottom: 4 }}>{c.name}</div>
+                {c.desc && <div style={{ fontSize: 12, color: "#374151", marginBottom: 8, lineHeight: 1.55 }}>{c.desc}</div>}
+                {c.publicUrl ? (
+                  <div style={{ fontSize: 10, color: "#10b981", marginBottom: 10 }}>✓ Public URL ready for video gen</div>
+                ) : (
+                  <div style={{ fontSize: 10, color: "#ef4444", marginBottom: 10 }}>⚠️ No public URL — can't generate video yet</div>
+                )}
+
+                <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => openEdit(c)}
+                    style={{ background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 12px", color: "#94a3b8", fontSize: 11, cursor: "pointer" }}>
+                    ✏️ Edit
+                  </button>
+                  {!c.isDefault && (
+                    <button
+                      onClick={() => setDefault(c.id)}
+                      style={{ background: "rgba(245,158,11,0.07)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 7, padding: "6px 12px", color: "#fbbf24", fontSize: 11, cursor: "pointer" }}>
+                      ⭐ Set Default
+                    </button>
+                  )}
+                  <button
+                    onClick={() => deleteChar(c.id)}
+                    style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 7, padding: "6px 10px", color: "#f87171", fontSize: 11, cursor: "pointer", marginLeft: "auto" }}>
+                    🗑
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   VIDEO JOBS PAGE — Track Nanobanana background video generation
+   ════════════════════════════════════════════════════════════════════ */
+function VideoJobsPage() {
+  const [jobs, setJobs]       = useState(() => loadVideoJobs());
+  const [polling, setPolling] = useState(false);
+  const [toast, setToast]     = useState(null);
+  const pollRef               = useRef(null);
+
+  function showToast(msg, type = "success") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3200);
+  }
+
+  // On mount: auto-poll any pending jobs
+  useEffect(() => {
+    const pending = loadVideoJobs().filter(j => j.status === "processing" || j.status === "queued");
+    if (pending.length > 0) pollJobs();
+    return () => { if (pollRef.current) clearTimeout(pollRef.current); };
+  }, []);
+
+  async function pollJobs() {
+    const s = loadSettings();
+    const key = s.nanobananApiKey?.trim();
+    if (!key) return;
+
+    const currentJobs = loadVideoJobs();
+    const pending = currentJobs.filter(j => j.status === "queued" || j.status === "processing");
+    if (pending.length === 0) { setJobs(loadVideoJobs()); return; }
+
+    setPolling(true);
+    let updated = [...currentJobs];
+    for (const job of pending) {
+      try {
+        const res = await checkNanoBananaStatus(job.nbVideoId, key);
+        if (res.status === "completed" || res.video_url) {
+          updated = updated.map(j => j.id === job.id
+            ? { ...j, status: "completed", videoUrl: res.video_url || j.videoUrl, thumbUrl: res.thumbnail_url || j.thumbUrl }
+            : j
+          );
+        } else if (res.status === "failed") {
+          updated = updated.map(j => j.id === job.id ? { ...j, status: "failed", error: "Generation failed on server." } : j);
+        } else {
+          updated = updated.map(j => j.id === job.id ? { ...j, status: res.status || j.status } : j);
+        }
+      } catch (_) {}
+    }
+    saveVideoJobs(updated);
+    setJobs(updated);
+    setPolling(false);
+
+    // Keep polling if still pending
+    const stillPending = updated.filter(j => j.status === "queued" || j.status === "processing");
+    if (stillPending.length > 0) {
+      pollRef.current = setTimeout(pollJobs, 8000);
+    }
+  }
+
+  function clearJob(id) {
+    const updated = jobs.filter(j => j.id !== id);
+    saveVideoJobs(updated);
+    setJobs(updated);
+  }
+
+  function clearCompleted() {
+    const updated = jobs.filter(j => j.status !== "completed");
+    saveVideoJobs(updated);
+    setJobs(updated);
+  }
+
+  const pending   = jobs.filter(j => j.status === "queued" || j.status === "processing");
+  const completed = jobs.filter(j => j.status === "completed");
+  const failed    = jobs.filter(j => j.status === "failed");
+
+  const STATUS_COLORS = { queued: "#f59e0b", processing: "#6366f1", completed: "#10b981", failed: "#ef4444" };
+  const STATUS_ICONS  = { queued: "⏳", processing: "⚡", completed: "✓", failed: "✗" };
+
+  return (
+    <div style={{ padding: 28, fontFamily: "'DM Sans', sans-serif", height: "100%", overflowY: "auto" }}>
+      {toast && <Toast {...toast} />}
+
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 22, gap: 12 }}>
+        <div>
+          <h1 style={{ fontSize: 22, fontWeight: 800, color: "#f1f5f9", letterSpacing: "-0.5px", marginBottom: 5, fontFamily: "'Bricolage Grotesque', sans-serif" }}>
+            Video Jobs
+          </h1>
+          <p style={{ fontSize: 13, color: "#374151" }}>
+            All Nanobanana UGC video generation jobs · {jobs.length} total
+            {pending.length > 0 && <span style={{ marginLeft: 8, color: "#f59e0b" }}>⚡ {pending.length} in progress</span>}
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={pollJobs}
+            disabled={polling}
+            style={{
+              background: "#0b1020", border: "1px solid #1a2540", borderRadius: 8,
+              padding: "8px 14px", color: "#94a3b8", fontSize: 12, cursor: polling ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", gap: 6,
+            }}>
+            {polling ? <><Spinner size={12}/> Polling…</> : "🔄 Refresh Status"}
+          </button>
+          {completed.length > 0 && (
+            <button
+              onClick={clearCompleted}
+              style={{ background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.2)", borderRadius: 8, padding: "8px 14px", color: "#f87171", fontSize: 12, cursor: "pointer" }}>
+              🗑 Clear Completed
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Background generation note */}
+      <div style={{
+        background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.18)",
+        borderRadius: 10, padding: "12px 16px", marginBottom: 22, fontSize: 12, color: "#6366f1", lineHeight: 1.7,
+      }}>
+        🌐 <strong>Background generation:</strong> Videos render on Nanobanana's servers — they continue generating even when you close this tab.
+        Come back here and click "Refresh Status" to pick up completed videos.
+      </div>
+
+      {jobs.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "60px 20px", color: "#374151" }}>
+          <div style={{ fontSize: 52, marginBottom: 16 }}>🎬</div>
+          <div style={{ fontSize: 15, color: "#4b5563", fontWeight: 700, marginBottom: 8 }}>No video jobs yet</div>
+          <div style={{ fontSize: 13, maxWidth: 380, margin: "0 auto", lineHeight: 1.75 }}>
+            Generate a concept, expand it, then click "🍌 Generate UGC Video" to start your first Nanobanana job.
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {jobs.map(job => {
+            const statusColor = STATUS_COLORS[job.status] || "#374151";
+            const statusIcon  = STATUS_ICONS[job.status]  || "?";
+            return (
+              <div
+                key={job.id}
+                style={{
+                  background: "#090d1b", border: "1px solid #0e1830",
+                  borderRadius: 12, padding: "16px 18px",
+                  display: "flex", gap: 16, alignItems: "flex-start",
+                  animation: "fadeUp 0.2s ease",
+                }}>
+                {/* Thumb */}
+                <div style={{
+                  width: 72, height: 72, borderRadius: 10, flexShrink: 0,
+                  background: "#0a0d1c", border: "1px solid #1a2540",
+                  overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  {job.thumbUrl
+                    ? <img src={job.thumbUrl} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }}/>
+                    : <span style={{ fontSize: 28 }}>🎬</span>
+                  }
+                </div>
+
+                {/* Info */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                    <div style={{ fontSize: 14, fontWeight: 700, color: "#f1f5f9" }}>{job.title}</div>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700, color: statusColor,
+                      background: `${statusColor}15`, border: `1px solid ${statusColor}30`,
+                      padding: "1px 8px", borderRadius: 20,
+                      display: "inline-flex", alignItems: "center", gap: 4,
+                    }}>
+                      {statusIcon} {job.status}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#374151", marginBottom: 6 }}>
+                    Character: <span style={{ color: "#64748b" }}>{job.charName}</span>
+                    {" · "}{new Date(job.createdAt).toLocaleString()}
+                    {job.nbVideoId && <span style={{ marginLeft: 8 }}>Job #{job.nbVideoId}</span>}
+                  </div>
+                  {(job.status === "queued" || job.status === "processing") && (
+                    <div style={{ fontSize: 11, color: "#6366f1", display: "flex", alignItems: "center", gap: 5 }}>
+                      <Spinner size={10}/> Rendering on Nanobanana servers… click Refresh Status to check.
+                    </div>
+                  )}
+                  {job.status === "completed" && job.videoUrl && (
+                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                      <a
+                        href={job.videoUrl} target="_blank" rel="noreferrer"
+                        style={{
+                          background: "linear-gradient(135deg,#10b981,#059669)",
+                          border: "none", borderRadius: 7, padding: "6px 14px",
+                          color: "white", fontSize: 12, fontWeight: 700,
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          boxShadow: "0 3px 10px rgba(16,185,129,.3)",
+                        }}>
+                        ▶ Watch Video ↗
+                      </a>
+                      <a
+                        href={job.videoUrl} download
+                        style={{
+                          background: "#0b1020", border: "1px solid #1a2540", borderRadius: 7, padding: "6px 14px",
+                          color: "#94a3b8", fontSize: 12, fontWeight: 600,
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                        }}>
+                        ⬇ Download
+                      </a>
+                    </div>
+                  )}
+                  {job.status === "failed" && (
+                    <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>✗ {job.error || "Generation failed"}</div>
+                  )}
+                </div>
+
+                {/* Remove */}
+                <button
+                  onClick={() => clearJob(job.id)}
+                  style={{ background: "none", border: "none", color: "#374151", cursor: "pointer", fontSize: 16, flexShrink: 0 }}>
+                  ×
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════
    MAIN APP LAYOUT (after login)
    ════════════════════════════════════════════════════════════════════ */
 function MainApp({ onLogout }) {
@@ -3136,10 +4160,12 @@ function MainApp({ onLogout }) {
   }, []);
 
   const NAV = [
-    { id: "generator", icon: "⚡", label: "Generate"  },
-    { id: "themes",    icon: "🎨", label: "Themes"    },
-    { id: "history",   icon: "📚", label: "History"   },
-    { id: "settings",  icon: "⚙️", label: "Settings"  },
+    { id: "generator",  icon: "⚡",  label: "Generate"   },
+    { id: "themes",     icon: "🎨",  label: "Themes"     },
+    { id: "history",    icon: "📚",  label: "History"    },
+    { id: "characters", icon: "👥",  label: "Characters" },
+    { id: "videos",     icon: "🍌",  label: "Videos"     },
+    { id: "settings",   icon: "⚙️",  label: "Settings"   },
   ];
 
   return (
@@ -3212,7 +4238,9 @@ function MainApp({ onLogout }) {
         <div style={{ height: 1, background: "#0c1428", margin: "12px 0" }}/>
 
         {/* Navigation */}
-        {NAV.map(n => (
+        {NAV.map(n => {
+          const pendingJobs = n.id === "videos" ? loadVideoJobs().filter(j => j.status === "queued" || j.status === "processing").length : 0;
+          return (
           <button
             key={n.id}
             onClick={() => setPage(n.id)}
@@ -3230,8 +4258,16 @@ function MainApp({ onLogout }) {
             }}>
             <span style={{ fontSize: 15 }}>{n.icon}</span>
             {n.label}
+            {pendingJobs > 0 && (
+              <span style={{
+                marginLeft: "auto", background: "#f59e0b", color: "#000",
+                borderRadius: 20, fontSize: 9, fontWeight: 700,
+                padding: "1px 6px", lineHeight: 1.6,
+              }}>{pendingJobs}</span>
+            )}
           </button>
-        ))}
+          );
+        })}
 
         {/* Footer */}
         <div style={{ marginTop: "auto", paddingTop: 12, borderTop: "1px solid #0c1428" }}>
@@ -3254,10 +4290,12 @@ function MainApp({ onLogout }) {
 
       {/* ── Main content ── */}
       <div style={{ flex: 1, overflowY: "auto", background: "#04060e" }}>
-        {page === "generator" && <GeneratorPage />}
-        {page === "themes"    && <ThemesPage onNavigateGenerator={() => setPage("generator")} />}
-        {page === "history"   && <HistoryPage   />}
-        {page === "settings"  && <SettingsPage  />}
+        {page === "generator"  && <GeneratorPage />}
+        {page === "themes"     && <ThemesPage onNavigateGenerator={() => setPage("generator")} />}
+        {page === "history"    && <HistoryPage   />}
+        {page === "characters" && <CharactersPage />}
+        {page === "videos"     && <VideoJobsPage  />}
+        {page === "settings"   && <SettingsPage  />}
       </div>
     </div>
   );
