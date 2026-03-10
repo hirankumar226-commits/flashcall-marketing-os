@@ -656,7 +656,7 @@ function extractJSONArray(rawText) {
 /* ── BRAND CONTEXT BUILDER ────────────────────────────────────────── */
 function buildBrandContext() {
   const s = loadSettings();
-  return `You create VIRAL short-form video content (Instagram Reels and TikTok Videos) for ${s.productName} (${s.websiteUrl}).
+  return `You write authentic UGC video scripts for ${s.productName} (${s.websiteUrl}).
 
 PRODUCT: ${s.productDesc}
 CORE GOAL: ${s.productGoal}
@@ -668,16 +668,28 @@ WORDS TO USE: ${s.wordsToUse}
 WORDS TO NEVER USE: ${s.wordsToAvoid}
 CONTENT PILLARS: ${s.contentPillars}
 
-CONTENT PHILOSOPHY:
-- Write like a REAL PERSON sharing their experience, NOT a brand account.
-- Lead with human insight, struggle, or revelation — product comes last (or not at all).
-- Use trending formats: "I was wrong about...", "Nobody talks about...", "POV: you just...", "This changed everything for me..."
-- Every hook must stop the scroll in the first 1-2 seconds.
-- Speak naturally — like voice notes to a friend who trusts you.
-- Use SPECIFIC numbers, real scenarios, concrete outcomes. "Made $3k in month one" beats "make money".
-- ${s.productName} can appear organically at the end as the tool used. Never lead with it.`;
-}
+HOW REAL UGC SCRIPTS SOUND — follow this exactly:
 
+GOOD: "Okay so I had a client ghost me after THREE calls. I spent hours on it. Nothing."
+BAD:  "Many professionals struggle with client acquisition and unpaid consultations."
+
+GOOD: "I started charging $200 for a 30-minute call and people actually paid it. Same week."
+BAD:  "By implementing premium pricing strategies, you can monetize your expertise effectively."
+
+GOOD: "My calendar was fully booked. Zero time. Making less than someone at a 9-to-5."
+BAD:  "Overworked professionals find themselves in a paradox of busyness without financial reward."
+
+THE RULES — every script must follow these without exception:
+- Short sentences. 5-10 words each. Hard stop after every thought.
+- First person always. "I", "me", "my". Personal story only.
+- Contractions always: "I've", "wasn't", "it's", "that's", "they're", "you're".
+- Specific details. "$150/hr" not "good money". "3 clients" not "several". "last Tuesday" not "recently".
+- Zero marketing words. Never: leverage, optimize, monetize, streamline, empower, transform, journey, game-changer, unlock, skyrocket, revolutionize.
+- ${s.productName} appears ONCE, casually, near the end only. Never in the hook. Never more than once total.
+- End soft and human. Never "smash that like button" or "follow for more" or "comment below".
+- Read it aloud in your head. If it sounds stiff or scripted, rewrite it.
+- The scenes must connect into one smooth monologue when read end-to-end.\`;
+}
 /* ── CONCEPT SCHEMA ───────────────────────────────────────────────── */
 // Each generated concept looks like:
 // {
@@ -2048,57 +2060,49 @@ PLATFORM + ANGLE ASSIGNMENTS (follow exactly):
 ${angleAssignments}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SCRIPT STRUCTURE REQUIREMENTS:
+SCRIPT RULES — READ THESE CAREFULLY:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-hook (0–3s):   ONE sentence max 10 words. Must demand attention. Curiosity gap or bold claim.
-body (3–45s):  Natural speech. Conversational. Specific numbers. Real scenarios. No stage directions.
-cta  (45–60s): Soft, direct. Never "like and subscribe." Clear next step or question.
+Every script is spoken by a real person to camera. It must sound like a voice memo, not a marketing email.
 
-ALL SCRIPTS MUST:
-- Sound like a real person talking, not a brand. Casual, direct, confident.
-- Use short sentences. Pauses are natural. Read aloud at normal pace = 60–90 seconds total.
-- Zero filler phrases: "honestly", "literally", "like I said", "at the end of the day".
-- Product mention (Flashcall.me) appears ONCE, naturally, near the end only.
+Hook (0–3s): 1 sentence. 8 words MAX. Stops the scroll immediately. Use a statement that makes someone pause mid-swipe. NOT a question. A bold claim or specific situation they recognize instantly.
 
+Good hooks: "I blocked a client last month." / "My fully booked calendar was a trap." / "I turned down $10k and it was the right call."
+Bad hooks: "Are you struggling to grow your coaching business?" / "Here's what no one tells you about pricing."
+
+Body (3–40s): Tell the story. SHORT sentences. One idea per sentence. Build tension — the problem should feel real and specific before the solution shows up. Use real details: dollar amounts, time frames, names of situations. Never explain what you're about to say — just say it.
+
+CTA (40–50s): One sentence. Soft. Human. NOT "follow me" or "like this video". Ask a question they'll answer in their head, or tell them the one thing to do next.
+
+SCENE STRUCTURE:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SCENE STRUCTURE — CRITICAL (used to build the Creatify video script):
+Write 4–5 scenes. Each scene = one emotional beat in the story. They must flow into each other naturally when read aloud back-to-back with no gaps.
+
+CRITICAL: The scenes array is the ACTUAL SCRIPT sent to the AI avatar. Every word will be spoken. Write exactly what you want the avatar to say — nothing more, nothing less.
+
+Scene 1 "Hook" — 1–2 sentences. 8–15 words total. The scroll-stopper. Make it specific and surprising.
+Scene 2 "Problem" — 3–5 sentences. 40–60 words. The pain. Make them feel it. Specific situation, not general concept.
+Scene 3 "Insight" — 3–4 sentences. 35–50 words. The turn. What they got wrong, or what changed.
+Scene 4 "Solution" — 3–5 sentences. 40–55 words. How it got better. ${s.productName} mentioned here ONCE, naturally.
+Scene 5 "CTA" — 1 sentence. 10–20 words. Soft, direct, human.
+
+EXAMPLE of what a GOOD full script sounds like (for a productivity tool):
+Scene 1: "I almost quit my business in February."
+Scene 2: "I had 12 clients. I was working 60-hour weeks. I wasn't sleeping. And I made $4,200 that month. Less than my first job out of college."
+Scene 3: "The problem wasn't my rates. It wasn't my clients. It was that I was doing every single call for free. Discovery, follow-up, strategy — all free. Hours gone."
+Scene 4: "I switched to paid calls only. Set it up through Flashcall. And my revenue doubled in six weeks. Not because I got more clients — because I stopped giving my time away."
+Scene 5: "If your calendar is full but your bank account isn't, this is why."
+
+CREATIFY AURORA VISUAL PROMPT (required):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Each concept MUST have a "scenes" array of 4–5 scenes. The scenes are stitched together into one spoken script by the AI avatar.
-Think of scenes as beats in a conversation — they flow naturally when read aloud in sequence.
+"creatifyPrompt" = the VISUAL SCENE for the Aurora AI avatar. NOT spoken content. 2–3 sentences describing: framing (close-up / medium shot), background (solid color, clean room, etc.), lighting (soft, dramatic, natural), posture/energy.
+Match the angle: confessional = intimate close-up, warm light. Hot take = tight frame, darker background. How-to = medium shot, bright and clean.
 
-SCENE FIELDS:
-- label: "Hook" | "Problem" | "Insight" | "Solution" | "CTA"
-- script: spoken words ONLY for this scene. 20–50 words. Natural speech. No stage directions, no brackets, no action cues.
-- visualNote: 1 short sentence — what emotion or energy this beat should carry (for reference only, not spoken).
+MUSIC DIRECTION (for reference when adding music):
+- genre: exact subgenre
+- tempo: BPM and feel
+- mood: emotional arc
+- references: 2–3 real songs or artists
 
-SCENE SEQUENCE:
-Scene 1 Hook:     Short, punchy. Stops the scroll. Bold claim or question. Max 25 words.
-Scene 2 Problem:  Empathy beat. The pain or frustration the viewer feels. Specific and relatable.
-Scene 3 Insight:  The surprising truth or reframe. The "aha" moment. Build curiosity.
-Scene 4 Solution: How Flashcall.me solves it — organic, not salesy. One clear benefit.
-Scene 5 CTA:      One sentence. Direct to camera. Soft ask — follow, check link, share.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CREATIFY AURORA VISUAL PROMPT (required for every concept):
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Generate a "creatifyPrompt" string — this describes the VISUAL SCENE for Creatify Aurora (NOT what the avatar says).
-Aurora uses this to set lighting, framing, and background. Write it like a cinematographer's brief.
-
-Good creatifyPrompt example:
-"Medium close-up, shoulders-up framing. Clean minimal background in deep navy or charcoal. Soft, even front lighting, no harsh shadows. Avatar faces camera directly, steady eye contact, natural confident posture. No props. Steady frame, no movement."
-
-Rules for creatifyPrompt:
-- Describe framing (close-up / medium shot), background (color/setting), lighting (soft / dramatic)
-- Match the content angle: hot take = intense close-up dark background; how-to = bright mid-shot; confession = intimate close-up warm light
-- Keep it 2–3 sentences max. Pure visual description only.
-
-MUSIC DIRECTION (for human reference when adding music in Creatify):
-- genre: exact subgenre (e.g. "lo-fi bedroom pop", "motivational cinematic", "UK garage instrumental")
-- tempo: BPM range and feel
-- mood: emotional arc across the video
-- references: 2–3 real songs or artists as sonic references
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fences, no extra text.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [
@@ -2111,34 +2115,34 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     "hookOnScreen": "3–5 word bold text overlay for the screen",
     "script": {
       "hook": "full 0–3s spoken script",
-      "body": "full 3–45s conversational script, no stage directions",
+      "body": "3-45s spoken script only. Short sentences. First person. Specific details. No stage directions, no brackets.",
       "cta": "full 45–60s CTA script"
     },
     "scenes": [
       {
         "label": "Hook",
-        "script": "Punchy hook. Max 25 words. No stage directions. Pure spoken words.",
-        "visualNote": "Intense close-up energy. Viewer feels called out."
+        "script": "ACTUAL spoken words only. 1-2 sentences. 8-15 words. Specific and surprising. Reads like something a real person just said.",
+        "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Problem",
-        "script": "The pain or frustration. Specific and relatable. 30–45 words.",
-        "visualNote": "Empathy beat. Viewer feels understood."
+        "script": "The pain. 3-5 sentences. 40-60 words. Specific situation. Short sentences. One idea per sentence. No brand words.",
+        "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Insight",
-        "script": "The surprising truth or reframe. 30–45 words.",
-        "visualNote": "Aha moment. Viewer leans in."
+        "script": "The turn or reframe. 3-4 sentences. 35-50 words. What they got wrong or what changed. Conversational.",
+        "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "Solution",
-        "script": "How Flashcall.me solves it — organic, not salesy. 30–45 words.",
-        "visualNote": "Relaxed, confident. Natural product mention."
+        "script": "How it got better. 3-5 sentences. 40-55 words. Product name appears once here, casually. Specific outcome.",
+        "visualNote": "Energy/emotion for this beat"
       },
       {
         "label": "CTA",
-        "script": "One direct sentence to camera. 15–20 words.",
-        "visualNote": "Tight, direct. Viewer acts."
+        "script": "One sentence. 10-20 words. Soft, human. Not a command. A thought they carry with them.",
+        "visualNote": "Energy/emotion for this beat"
       }
     ],
     "creatifyPrompt": "2-3 sentence visual scene description for Aurora: framing, background, lighting. No spoken content.",
@@ -2306,7 +2310,7 @@ CRITICAL OUTPUT RULES:
     "hookOnScreen": "3-5 word screen text",
     "script": {
       "hook": "0-3s spoken script",
-      "body": "3-45s script with visual cues in brackets",
+      "body": "3-45s spoken script only. Short sentences. First person. Specific details. No stage directions.",
       "cta": "45-60s CTA script"
     },
     "visualStyle": "talking head",
@@ -3715,7 +3719,7 @@ Return ONLY a valid JSON array with exactly 1 object:
     "hookOnScreen": "3-5 word screen text",
     "script": {
       "hook": "0-3s spoken script",
-      "body": "3-45s script with [visual direction cues]",
+      "body": "3-45s spoken script only. Short sentences. First person. Specific details. No stage directions.",
       "cta": "45-60s CTA script"
     },
     "visualStyle": "talking head",
