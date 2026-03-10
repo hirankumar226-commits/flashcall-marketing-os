@@ -69,9 +69,10 @@ const DEFAULTS = {
   geminiApiKey:      "",
   heygenApiKey:      "",   // from app.heygen.com → Settings → API
   heygenVoiceId:     "",   // set via Settings → AI → Browse & Pick a Voice
-  supabaseUrl:       "",   // https://xxxx.supabase.co
-  supabaseAnonKey:   "",   // eyJ... public anon key
-  // Video generation uses Gemini key via Veo 3.1 — no separate key needed
+  // ── Supabase credentials are safe to hardcode (publishable anon key, protected by RLS) ──
+  // Team members auto-load all settings (incl. Gemini + HeyGen keys) from Supabase on login.
+  supabaseUrl:       "https://aujypjwdzgmlakzwenxo.supabase.co",
+  supabaseAnonKey:   "sb_publishable_WU9ZD46PznKgT_HmgBGQjg_bD0dwgUU",
   productName:     "Flashcall.me",
   productTagline:  "Link-in-bio for consultants",
   productDesc:     "A link-in-bio tool for consultants and experts to monetize expertise via instant pay-per-minute calls (chat, audio, video) and scheduled services.",
@@ -222,11 +223,14 @@ async function sbPull(id) {
 
 // Pull all data from Supabase → populate localStorage (called on app load)
 async function syncFromSupabase() {
-  if (!sbReady()) return { ok: false, reason: "not_configured" };
+  // Use hardcoded DEFAULTS for Supabase creds if localStorage doesn't have them yet
+  const stored = lsGet(K_SETTINGS, {});
+  const supabaseUrl     = (stored.supabaseUrl     || DEFAULTS.supabaseUrl    || "").replace(/\/$/, "");
+  const supabaseAnonKey =  stored.supabaseAnonKey || DEFAULTS.supabaseAnonKey || "";
+  if (!supabaseUrl || !supabaseAnonKey) return { ok: false, reason: "not_configured" };
   try {
-    const { url, key } = _sbCfg();
-    const res = await fetch(`${url}/rest/v1/fcr_store?select=id,data`, {
-      headers: { "apikey": key, "Authorization": `Bearer ${key}` },
+    const res = await fetch(`${supabaseUrl}/rest/v1/fcr_store?select=id,data`, {
+      headers: { "apikey": supabaseAnonKey, "Authorization": `Bearer ${supabaseAnonKey}` },
     });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
@@ -241,7 +245,16 @@ async function syncFromSupabase() {
       videojobs:  K_VIDEOJOBS,
       themes:     K_THEMES,
     };
-    rows.forEach(r => { if (MAP[r.id] && r.data !== null) lsSet(MAP[r.id], r.data); });
+    rows.forEach(r => {
+      if (!MAP[r.id] || r.data === null) return;
+      if (r.id === "settings") {
+        // Merge pulled settings with DEFAULTS — hardcoded Supabase creds always win
+        const merged = { ...DEFAULTS, ...r.data, supabaseUrl: DEFAULTS.supabaseUrl, supabaseAnonKey: DEFAULTS.supabaseAnonKey };
+        lsSet(K_SETTINGS, merged);
+      } else {
+        lsSet(MAP[r.id], r.data);
+      }
+    });
     return { ok: true };
   } catch (e) {
     return { ok: false, reason: e.message };
@@ -5270,12 +5283,20 @@ function LoginScreen({ onAuth }) {
    ROOT APP — Authentication gate
    ════════════════════════════════════════════════════════════════════ */
 function App() {
-  // Read auth state from localStorage at init
-  const [authed, setAuthed] = useState(() => {
-    return lsGet(K_AUTH, null) === "1";
-  });
+  const [authed,  setAuthed]  = useState(() => lsGet(K_AUTH, null) === "1");
+  const [syncing, setSyncing] = useState(false);
 
-  function handleAuth() {
+  // On mount: if already authed (returning user), quietly re-sync in background
+  useEffect(() => {
+    if (authed) { syncFromSupabase(); }
+  }, []);
+
+  async function handleAuth() {
+    lsSet(K_AUTH, "1");
+    setSyncing(true);
+    // Pull all settings + data from Supabase so team members don't need to configure anything
+    await syncFromSupabase();
+    setSyncing(false);
     setAuthed(true);
   }
 
@@ -5284,7 +5305,38 @@ function App() {
     setAuthed(false);
   }
 
-  if (!authed) return <LoginScreen onAuth={handleAuth} />;
+  if (!authed && !syncing) return <LoginScreen onAuth={handleAuth} />;
+  if (syncing) return (
+    <div style={{
+      minHeight: "100vh", background: "#04060e",
+      display: "flex", flexDirection: "column",
+      alignItems: "center", justifyContent: "center",
+      fontFamily: "'DM Sans', sans-serif", gap: 20,
+    }}>
+      <div style={{
+        width: 56, height: 56, borderRadius: 16,
+        background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        fontSize: 26, boxShadow: "0 0 40px rgba(99,102,241,0.4)",
+        animation: "glow 3s ease infinite",
+      }}>⚡</div>
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#f1f5f9", marginBottom: 6 }}>
+          Loading your workspace…
+        </div>
+        <div style={{ fontSize: 12, color: "#374151" }}>Syncing settings from Supabase</div>
+      </div>
+      <div style={{
+        width: 180, height: 3, background: "#0c1428", borderRadius: 3, overflow: "hidden",
+      }}>
+        <div style={{
+          height: "100%", borderRadius: 3,
+          background: "linear-gradient(90deg, #6366f1, #8b5cf6)",
+          animation: "progressFill 1.8s ease infinite",
+        }}/>
+      </div>
+    </div>
+  );
   return <MainApp onLogout={handleLogout} />;
 }
 
