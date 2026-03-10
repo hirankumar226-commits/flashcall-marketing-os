@@ -479,14 +479,18 @@ async function heygenGetVideoStatus(videoId, apiKey) {
 }
 
 /* ════════════════════════════════════════════════════════
-   CREATIFY API — /api/lipsyncs/ (AI Avatar, Aurora model)
+   CREATIFY API — routed through /api/creatify Vercel proxy
+   to bypass browser CORS restrictions.
    ════════════════════════════════════════════════════════ */
 function creatifyHeaders(apiId, apiKey) {
   return { "Content-Type": "application/json", "X-API-ID": apiId, "X-API-KEY": apiKey };
 }
 
+// Always call via the Vercel proxy at /api/creatify?path=...
+const CREATIFY_PROXY = "/api/creatify";
+
 async function creatifyListAvatars(apiId, apiKey) {
-  const res  = await fetch("https://api.creatify.ai/api/personas/", { headers: creatifyHeaders(apiId, apiKey) });
+  const res  = await fetch(`${CREATIFY_PROXY}?path=/api/personas/`, { headers: creatifyHeaders(apiId, apiKey) });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.message || `Creatify avatars HTTP ${res.status}`);
   return Array.isArray(data) ? data : (data.results || data.data || []);
@@ -494,24 +498,24 @@ async function creatifyListAvatars(apiId, apiKey) {
 
 async function creatifyGenerateVideo(creatorId, script, apiId, apiKey) {
   const body = {
-    text:         script,
-    creator:      creatorId,
-    aspect_ratio: "9:16",
-    model_version: "aurora_v1_fast",  // best quality fast; switch to aurora_v1 for premium
+    text:          script,
+    creator:       creatorId,
+    aspect_ratio:  "9:16",
+    model_version: "aurora_v1_fast",
   };
-  const res  = await fetch("https://api.creatify.ai/api/lipsyncs/", {
-    method: "POST",
+  const res  = await fetch(`${CREATIFY_PROXY}?path=/api/lipsyncs/`, {
+    method:  "POST",
     headers: creatifyHeaders(apiId, apiKey),
-    body: JSON.stringify(body),
+    body:    JSON.stringify(body),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data?.message || data?.detail || `Creatify generate HTTP ${res.status}`);
   if (!data.id) throw new Error("Creatify did not return a job ID");
-  return data.id;  // lipsync task ID
+  return data.id;
 }
 
 async function creatifyGetStatus(jobId, apiId, apiKey) {
-  const res  = await fetch(`https://api.creatify.ai/api/lipsyncs/${jobId}/`, {
+  const res  = await fetch(`${CREATIFY_PROXY}?path=/api/lipsyncs/${jobId}/`, {
     headers: creatifyHeaders(apiId, apiKey),
   });
   const data = await res.json();
