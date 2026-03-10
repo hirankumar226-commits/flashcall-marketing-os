@@ -114,6 +114,8 @@ const K_VIDEOJOBS  = "fcr_videojobs_v3";   // [{id,operationName,conceptId,title
 /* ── DEFAULT SETTINGS ─────────────────────────────────────────────── */
 const DEFAULTS = {
   geminiApiKey:      "",
+  openaiApiKey:      "",   // from platform.openai.com → API keys
+  claudeApiKey:      "",   // from console.anthropic.com → API keys
   heygenApiKey:      "",   // from app.heygen.com → Settings → API
   heygenVoiceId:     "",   // set via Settings → AI → Browse & Pick a Voice
   creatifyApiId:     "",   // from app.creatify.ai → Settings → API
@@ -603,8 +605,33 @@ async function callOpenAIText(systemPrompt, userPrompt, maxTokens = 8192) {
   return text;
 }
 
+async function callClaudeText(systemPrompt, userPrompt, maxTokens = 8192) {
+  const key = loadSettings().claudeApiKey;
+  if (!key || !key.trim()) throw new Error("No Claude API key. Add it in ⚙️ Settings.");
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-api-key": key.trim(), "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-5",
+      max_tokens: maxTokens,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }]
+    })
+  });
+  if (!res.ok) {
+    const errTxt = await res.text().catch(() => "");
+    throw new Error(`Claude HTTP ${res.status}: ${errTxt.slice(0, 200)}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(`Claude Error: ${data.error.message || JSON.stringify(data.error)}`);
+  const text = data?.content?.[0]?.text;
+  if (!text) throw new Error("Claude returned empty response. Please try again.");
+  return text;
+}
+
 async function callAI(provider, systemPrompt, userPrompt, maxTokens = 8192) {
   if (provider === "openai") return callOpenAIText(systemPrompt, userPrompt, maxTokens);
+  if (provider === "claude") return callClaudeText(systemPrompt, userPrompt, maxTokens);
   return callGemini(systemPrompt, userPrompt, maxTokens);
 }
 
@@ -2002,7 +2029,7 @@ function GeneratorPage() {
   // On mount: check API key, load today's cached concepts
   useEffect(() => {
     const s = loadSettings();
-    setHasKey(Boolean((s.geminiApiKey && s.geminiApiKey.trim()) || (s.openaiApiKey && s.openaiApiKey.trim())));
+    setHasKey(Boolean((s.geminiApiKey && s.geminiApiKey.trim()) || (s.openaiApiKey && s.openaiApiKey.trim()) || (s.claudeApiKey && s.claudeApiKey.trim())));
     const daily = lsGet(K_DAILY, null);
     if (daily && daily.date === todayStr() && Array.isArray(daily.concepts) && daily.concepts.length > 0) {
       setConcepts(daily.concepts);
@@ -2029,7 +2056,7 @@ function GeneratorPage() {
     if (generating) return;
     const s = loadSettings();
     if (!s.geminiApiKey || !s.geminiApiKey.trim()) {
-      showToast(`Add your ${aiProvider === "openai" ? "OpenAI" : "Gemini"} API key in ⚙️ Settings first.`, "error");
+      showToast(`Add your ${aiProvider === "openai" ? "OpenAI" : aiProvider === "claude" ? "Claude" : "Gemini"} API key in ⚙️ Settings first.`, "error");
       return;
     }
     if (selectedPlatforms.length === 0) {
@@ -2483,7 +2510,7 @@ CRITICAL OUTPUT RULES:
 
       {/* AI Provider toggle */}
       <div style={{ display:"flex", gap:8, marginBottom:16 }}>
-        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ ChatGPT","#10b981"]].map(([id,label,col]) => (
+        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ GPT-4o","#10b981"],["claude","🟠 Claude","#f59e0b"]].map(([id,label,col]) => (
           <button key={id} onClick={() => setAiProvider(id)} style={{ flex:1, padding:"9px 14px", borderRadius:10, border:"1px solid "+(aiProvider===id ? col+"60" : "#0e1830"), background:aiProvider===id ? col+"10" : "#06080f", color:aiProvider===id ? col : "#374151", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", transition:"all 0.2s" }}>
             {label}
           </button>
@@ -3432,6 +3459,24 @@ function SettingsPage() {
               />
               <p style={{ color: "#1e2d4a", fontSize: 11, margin: "6px 0 0", lineHeight: 1.5 }}>
                 platform.openai.com → API keys. Used for GPT-4o in Generate &amp; Ad Studio.
+              </p>
+            </div>
+
+            <div style={{ background: "#08090f", border: "1px solid #0c1428", borderRadius: 14, padding: "18px 20px", marginBottom: 16 }}>
+              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                <span style={{ fontSize:16 }}>🟠</span>
+                <label style={{ fontSize: 11, color: "#374151", display: "block", textTransform: "uppercase", letterSpacing: "0.6px", fontWeight: 600, margin:0 }}>Claude API Key</label>
+                <span style={{ fontSize:10, background:"rgba(245,158,11,0.1)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:100, padding:"2px 8px", color:"#f59e0b", marginLeft:"auto" }}>claude-sonnet-4-5</span>
+              </div>
+              <input
+                type={showKey ? "text" : "password"}
+                value={s.claudeApiKey || ""}
+                onChange={e => update("claudeApiKey", e.target.value)}
+                placeholder="sk-ant-..."
+                style={{ width: "100%", background: "#060912", border: "1px solid #111827", borderRadius: 8, padding: "10px 12px", color: "#f1f5f9", fontSize: 13, outline: "none", fontFamily: "'DM Mono', monospace", boxSizing: "border-box" }}
+              />
+              <p style={{ color: "#1e2d4a", fontSize: 11, margin: "6px 0 0", lineHeight: 1.5 }}>
+                console.anthropic.com → API keys. Used for Claude Sonnet in Generate &amp; Ad Studio.
               </p>
             </div>
 
@@ -5086,15 +5131,30 @@ function AdStudioPage() {
   // Unified call — routes to whichever provider is selected
   const aiCall = async (textPrompt, imageParts) => {
     if (provider === "openai") {
-      // Build OpenAI messages — images as base64 data URLs
       const contentParts = (imageParts || []).map(p => ({
         type: "image_url",
         image_url: { url: "data:image/jpeg;base64," + p.inline_data.data }
       }));
       contentParts.push({ type: "text", text: textPrompt });
       return await callOpenAI([{ role: "user", content: contentParts }]);
+    } else if (provider === "claude") {
+      // Claude vision: images as base64
+      const claudeKey = settings.claudeApiKey?.trim() || "";
+      if (!claudeKey) throw new Error("No Claude API key — add it in Settings first.");
+      const msgParts = (imageParts || []).map(p => ({
+        type: "image",
+        source: { type: "base64", media_type: "image/jpeg", data: p.inline_data.data }
+      }));
+      msgParts.push({ type: "text", text: textPrompt });
+      const res = await fetchWithTimeout("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-api-key": claudeKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" },
+        body: JSON.stringify({ model: "claude-sonnet-4-5", max_tokens: 4096, messages: [{ role: "user", content: msgParts }] })
+      }, 60000);
+      const d = await res.json();
+      if (d.error) throw new Error(d.error.message);
+      return { text: d.content?.[0]?.text || "" };
     } else {
-      // Gemini format
       const parts = (imageParts || []).map(p => p);
       parts.push({ text: textPrompt });
       const body = { contents: [{ parts }], generationConfig: { responseMimeType: "application/json" } };
@@ -5215,8 +5275,9 @@ function AdStudioPage() {
       </p>
       {provider === "gemini" && !apiKey && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:16 }}>No Gemini key — add it in <strong>Settings</strong> first.</div>}
       {provider === "openai" && !openaiKey && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:16 }}>No OpenAI key — add it in <strong>Settings</strong> first.</div>}
+      {provider === "claude" && !settings.claudeApiKey?.trim() && <div style={{ background:"rgba(245,158,11,0.07)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:10, padding:"10px 14px", color:"#f59e0b", fontSize:13, marginBottom:16 }}>No Claude key — add it in <strong>Settings</strong> first.</div>}
       <div style={{ display:"flex", gap:8, marginBottom:20 }}>
-        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ ChatGPT","#10b981"]].map(([id,label,col]) => (
+        {[["gemini","✦ Gemini","#ff1f6a"],["openai","⬡ GPT-4o","#10b981"],["claude","🟠 Claude","#f59e0b"]].map(([id,label,col]) => (
           <button key={id} onClick={() => setProvider(id)} style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid "+(provider===id ? col+"60" : "#0c1428"), background:provider===id ? col+"10" : "#06080f", color:provider===id ? col : "#374151", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"'DM Sans',sans-serif", transition:"all 0.2s" }}>
             {label}
           </button>
@@ -5282,7 +5343,7 @@ function AdStudioPage() {
         <div style={{ ...S.pill("#10b981"), marginBottom:14 }}>✓ VISUAL DNA EXTRACTED</div>
         <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:6 }}>
           <h2 style={{ fontFamily:"'Bricolage Grotesque',sans-serif", fontSize:26, fontWeight:800, color:"#f1f5f9", margin:0 }}>Got everything from the video</h2>
-          <span style={{ fontSize:10, fontWeight:700, padding:"3px 10px", borderRadius:100, background:provider==="openai"?"rgba(16,185,129,0.1)":"rgba(255,31,106,0.1)", color:provider==="openai"?"#10b981":"#ff1f6a", border:"1px solid "+(provider==="openai"?"rgba(16,185,129,0.2)":"rgba(255,31,106,0.2)") }}>{provider==="openai"?"GPT-4o":"Gemini 2.5"}</span>
+          <span style={{ fontSize:10, fontWeight:700, padding:"3px 10px", borderRadius:100, background:provider==="openai"?"rgba(16,185,129,0.1)":"rgba(255,31,106,0.1)", color:provider==="openai"?"#10b981":"#ff1f6a", border:"1px solid "+(provider==="openai"?"rgba(16,185,129,0.2)":"rgba(255,31,106,0.2)") }}>{provider==="openai"?"GPT-4o":provider==="claude"?"Claude Sonnet":"Gemini 2.5"}</span>
         </div>
         <p style={{ color:"#374151", margin:"0 0 20px", fontSize:14 }}>Now describe your creator — same scene, same activity. Only what she says changes.</p>
         {frames.length>0 && <div style={{ display:"flex", gap:8, marginBottom:20 }}>{frames.map((f,i) => <div key={i} style={{ width:68, aspectRatio:"9/16", borderRadius:10, overflow:"hidden", border:"1px solid #0c1428", flexShrink:0 }}><img src={f.preview} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/></div>)}<div style={{ flex:1, display:"flex", alignItems:"center", paddingLeft:12 }}><span style={{ fontSize:11, color:"#374151" }}>Gemini analyzed {frames.length} frames across the full video arc.</span></div></div>}
