@@ -366,30 +366,28 @@ async function heygenListVoices(apiKey) {
 }
 
 // Build HeyGen video_inputs from concept scenes (multi-cut influencer style)
+// Only uses fields confirmed in HeyGen v2 API docs: type, avatar_id, avatar_style,
+// input_text, voice_id, and background color. No undocumented scale/offset/speed.
 function buildHeygenVideoInputs(avatarId, scenes, voiceId) {
-  // Scene → video_input mappings. Each scene = one hard cut in the final video.
-  // Background colors shift per scene to simulate environment/energy changes.
-  // Avatar scale shifts to simulate close-up vs. mid-shot cuts.
-  return scenes.map(scene => ({
-    character: {
-      type:         "avatar",
-      avatar_id:    avatarId,
-      avatar_style: "normal",
-      // scale: 0.4 (wide) → 1.0 (tight close-up). Default 0.7.
-      scale:        scene.avatarScale  != null ? scene.avatarScale  : 0.7,
-      // offset: {x, y} as fraction of frame, 0 = center.
-      offset:       scene.avatarOffset || { x: 0.0, y: 0.0 },
-    },
-    voice: {
-      type:       "text",
-      input_text: scene.script,
-      voice_id:   voiceId,
-      speed:      scene.voiceSpeed != null ? scene.voiceSpeed : 1.0,
-    },
-    background: scene.backgroundHex
-      ? { type: "color", value: scene.backgroundHex }
-      : { type: "color", value: "#111827" },
-  }));
+  return scenes.map(scene => {
+    const item = {
+      character: {
+        type:         "avatar",
+        avatar_id:    avatarId,
+        avatar_style: "normal",
+      },
+      voice: {
+        type:       "text",
+        input_text: scene.script,
+        voice_id:   voiceId,
+      },
+    };
+    // Only add background if we have a valid hex color
+    if (scene.backgroundHex && /^#[0-9A-Fa-f]{6}$/.test(scene.backgroundHex)) {
+      item.background = { type: "color", value: scene.backgroundHex };
+    }
+    return item;
+  });
 }
 
 async function heygenGenerateVideo(avatarId, scenes, voiceId, apiKey) {
