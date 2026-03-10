@@ -315,16 +315,7 @@ async function checkVeoOperation(operationName, geminiKey) {
   const url = `https://generativelanguage.googleapis.com/v1beta/${operationName}?key=${encodeURIComponent(geminiKey)}`;
   const res = await fetch(url);
   const data = await res.json().catch(() => ({}));
-  console.log("[Veo poll]", res.status, JSON.stringify(data, null, 2));
-  if (!res.ok) {
-    const reason = data?.error?.message || data?.error?.status || `HTTP ${res.status}`;
-    throw new Error(`Veo API error: ${reason}`);
-  }
-  // Surface operation-level errors clearly
-  if (data.error) {
-    const reason = data.error.message || data.error.status || JSON.stringify(data.error);
-    throw new Error(`Veo operation failed: ${reason}`);
-  }
+  if (!res.ok) throw new Error(`Veo poll HTTP ${res.status}`);
   return data;
 }
 
@@ -3012,6 +3003,9 @@ function SettingsPage() {
               <div style={{ marginTop: 10, fontSize: 11, color: "#374151" }}>
                 ⚠️ Note: Veo generates videos as temporary Gemini Files (expire after 48h). Download videos from the Videos page before they expire.
               </div>
+              <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 8, fontSize: 11, color: "#f59e0b" }}>
+                ⚡ <strong>Paid API key required</strong> — Veo 3.1 does not work on the free Gemini tier. Enable billing at aistudio.google.com → API key settings. Free keys submit jobs that silently never complete.
+              </div>
             </div>
           </div>
         )}
@@ -4070,6 +4064,64 @@ function CharactersPage() {
 /* ════════════════════════════════════════════════════════════════════
    VIDEO JOBS PAGE — Track Veo 3.1 background video generation
    ════════════════════════════════════════════════════════════════════ */
+// Live elapsed time + progress bar for rendering jobs
+function ElapsedTimer({ createdAt, onTimeout }) {
+  const [elapsed, setElapsed] = useState(0);
+  const TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
+
+  useEffect(() => {
+    const start = new Date(createdAt).getTime();
+    function tick() {
+      const diff = Date.now() - start;
+      setElapsed(diff);
+      if (diff >= TIMEOUT_MS && onTimeout) onTimeout();
+    }
+    tick();
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, [createdAt]);
+
+  const secs  = Math.floor(elapsed / 1000);
+  const mins  = Math.floor(secs / 60);
+  const s     = secs % 60;
+  const pct   = Math.min(100, (elapsed / TIMEOUT_MS) * 100);
+  const timed = elapsed >= TIMEOUT_MS;
+
+  const label = mins > 0
+    ? `${mins}m ${String(s).padStart(2,"0")}s`
+    : `${s}s`;
+
+  // Animated shimmer progress bar
+  const barColor = timed ? "#ef4444" : pct > 70 ? "#f59e0b" : "#6366f1";
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+        <Spinner size={10}/>
+        <span style={{ fontSize: 11, color: timed ? "#ef4444" : "#6366f1" }}>
+          {timed
+            ? "⚠ Taking longer than expected — may have failed. Try refreshing or resubmit."
+            : `Veo 3.1 rendering… ${label} elapsed`}
+        </span>
+      </div>
+      <div style={{ height: 4, background: "#0e1830", borderRadius: 4, overflow: "hidden", width: "100%", maxWidth: 320 }}>
+        <div style={{
+          height: "100%",
+          width: `${pct}%`,
+          background: `linear-gradient(90deg, ${barColor}, ${barColor}99)`,
+          borderRadius: 4,
+          transition: "width 1s linear, background 0.5s",
+          backgroundSize: "200% 100%",
+          animation: timed ? "none" : "shimmer 1.5s infinite linear",
+        }}/>
+      </div>
+      <div style={{ fontSize: 10, color: "#374151", marginTop: 3 }}>
+        {timed ? "15:00+ elapsed" : `Est. ${Math.max(0, Math.ceil((TIMEOUT_MS - elapsed) / 60000))} min remaining (max 15 min)`}
+      </div>
+    </div>
+  );
+}
+
 function VideoJobsPage() {
   const [jobs, setJobs]       = useState(() => loadVideoJobs());
   const [polling, setPolling] = useState(false);
@@ -4099,22 +4151,16 @@ function VideoJobsPage() {
 
     setPolling(true);
     let updated = [...currentJobs];
-    const TIMEOUT_MS = 20 * 60 * 1000; // auto-fail after 20 min
     for (const job of pending) {
-      // Auto-fail if stuck > 20 minutes
-      const elapsed = Date.now() - new Date(job.createdAt).getTime();
-      if (elapsed > TIMEOUT_MS) {
-        updated = updated.map(j => j.id === job.id
-          ? { ...j, status: "failed", error: "Timed out after 20 min. Veo may have failed — try generating again." }
-          : j
-        );
-        continue;
-      }
       if (!job.operationName) continue;
       try {
         const op = await checkVeoOperation(job.operationName, key);
         if (op.done) {
-          const vid = op.response?.generatedVideos?.[0]?.video;
+          // Correct Gemini API response path (as of 2025):
+          // .response.generateVideoResponse.generatedSamples[0].video.uri
+          const sample = op.response?.generateVideoResponse?.generatedSamples?.[0];
+          const vid = sample?.video;
+          console.log("[Veo done] full response:", JSON.stringify(op.response, null, 2));
           if (vid?.uri) {
             updated = updated.map(j => j.id === job.id
               ? { ...j, status: "completed", videoFileUri: vid.uri }
@@ -4125,14 +4171,19 @@ function VideoJobsPage() {
               ? { ...j, status: "failed", error: op.error?.message || "Generation failed." }
               : j
             );
+          } else {
+            // done=true but no video URI and no error — log and fail gracefully
+            const raw = JSON.stringify(op.response || {}).slice(0, 400);
+            updated = updated.map(j => j.id === job.id
+              ? { ...j, status: "failed", error: `No video in response. Raw: ${raw}` }
+              : j
+            );
           }
         }
         // else still processing — leave status as-is
-      } catch (err) {
-        updated = updated.map(j => j.id === job.id
-          ? { ...j, status: "failed", error: err.message || "API error checking status." }
-          : j
-        );
+      } catch (e) {
+        console.warn("Veo poll error:", e.message);
+        // Don't mark failed on network errors — keep retrying
       }
     }
     saveVideoJobs(updated);
@@ -4259,38 +4310,23 @@ function VideoJobsPage() {
                     Character: <span style={{ color: "#64748b" }}>{job.charName}</span>
                     {" · "}{new Date(job.createdAt).toLocaleString()}
                   </div>
-                  {(job.status === "queued" || job.status === "processing") && (() => {
-                    const elapsedMs  = Date.now() - new Date(job.createdAt).getTime();
-                    const elapsedSec = Math.floor(elapsedMs / 1000);
-                    const elapsedMin = Math.floor(elapsedSec / 60);
-                    const remSec     = elapsedSec % 60;
-                    const timeStr    = elapsedMin > 0 ? elapsedMin + "m " + remSec + "s elapsed" : elapsedSec + "s elapsed";
-                    const pct        = Math.min(95, Math.round((elapsedMs / (8 * 60 * 1000)) * 100));
-                    const isLong     = elapsedMs > 10 * 60 * 1000;
-                    return (
-                      <div style={{ marginTop: 6 }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, marginBottom: 4 }}>
-                          <span style={{ color: isLong ? "#f59e0b" : "#6366f1", display: "flex", alignItems: "center", gap: 5 }}>
-                            <Spinner size={10}/> {isLong ? "Still rendering — Veo may be busy…" : "Veo 3.1 rendering…"}
-                          </span>
-                          <span style={{ color: "#64748b" }}>{timeStr} · ~{pct}%</span>
-                        </div>
-                        <div style={{ background: "#0b1020", borderRadius: 4, height: 5, overflow: "hidden" }}>
-                          <div style={{
-                            height: "100%", borderRadius: 4,
-                            width: pct + "%",
-                            background: isLong ? "linear-gradient(90deg,#f59e0b,#ef4444)" : "linear-gradient(90deg,#6366f1,#8b5cf6)",
-                            transition: "width 1s ease"
-                          }}/>
-                        </div>
-                        {isLong && (
-                          <div style={{ fontSize: 10, color: "#f59e0b", marginTop: 4 }}>
-                            Taking longer than usual. Click Refresh Status — it may have completed or failed silently.
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })()}
+                  {(job.status === "queued" || job.status === "processing") && (
+                    <ElapsedTimer
+                      createdAt={job.createdAt}
+                      onTimeout={() => {
+                        const current = loadVideoJobs();
+                        const j = current.find(x => x.id === job.id);
+                        if (j && (j.status === "queued" || j.status === "processing")) {
+                          const updated = current.map(x => x.id === job.id
+                            ? { ...x, status: "failed", error: "Timed out after 15 min. Veo may be overloaded — try resubmitting." }
+                            : x
+                          );
+                          saveVideoJobs(updated);
+                          setJobs(updated);
+                        }
+                      }}
+                    />
+                  )}
                   {job.status === "completed" && job.videoFileUri && (
                     <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                       <button
@@ -4333,20 +4369,7 @@ function VideoJobsPage() {
                     </div>
                   )}
                   {job.status === "failed" && (
-                    <div style={{ marginTop: 6, background: "#1a0a0a", border: "1px solid #7f1d1d", borderRadius: 6, padding: "8px 10px" }}>
-                      <div style={{ fontSize: 11, color: "#ef4444", fontWeight: 700, marginBottom: 4 }}>✗ Generation Failed</div>
-                      <div style={{ fontSize: 11, color: "#fca5a5", fontFamily: "monospace", wordBreak: "break-word", lineHeight: 1.5 }}>
-                        {job.error || "Unknown error — open F12 Console for full Veo API response."}
-                      </div>
-                      <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
-                        <button
-                          onClick={() => { navigator.clipboard.writeText(job.error || ""); }}
-                          style={{ fontSize: 10, background: "#7f1d1d", border: "none", borderRadius: 4, padding: "3px 8px", color: "#fca5a5", cursor: "pointer" }}>
-                          📋 Copy Error
-                        </button>
-                        <span style={{ fontSize: 10, color: "#64748b" }}>F12 → Console for full API response</span>
-                      </div>
-                    </div>
+                    <div style={{ fontSize: 11, color: "#ef4444", marginTop: 4 }}>✗ {job.error || "Generation failed"}</div>
                   )}
                 </div>
 
