@@ -1542,7 +1542,7 @@ function VideoAnalyzer({ onGenerateFromAnalysis }) {
   const [platform, setPlatform]     = useState(null);
   const [error, setError]           = useState(null);
   const [genLoading, setGenLoading]       = useState(false);
-  const [vaConceptCount, setVaConceptCount] = useState(10);
+  const [vaConceptCount, setVaConceptCount] = useState(1);
   const [vaPlatforms, setVaPlatforms]       = useState(["Instagram Reel", "TikTok Video"]);
   const [vaFocus, setVaFocus]               = useState("");
 
@@ -2138,10 +2138,29 @@ ALL ${conceptCount} CONCEPTS MUST follow this theme's style, tone, and format.
         `Concept ${i + 1} [${platformSeq[i]}]: ${ANGLES[i % ANGLES.length]}`
       ).join("\n");
 
+      // ── VIRAL CONTEXT from Video Analyzer ──────────────────────────
+      const viralBlock = (() => {
+        if (!viralCtx) return "";
+        function safeV(val, max) { if (!val) return ""; return String(val).replace(/["`]/g,"'").replace(/[\r\n]+/g," ").trim().slice(0,max||180); }
+        function safeListV(arr, max, len) { return Array.isArray(arr)?arr.slice(0,max||4).map(x=>safeV(x,len||140)).join("; "):""; }
+        const lines = [
+          viralCtx.hook&&viralCtx.hook.psychologicalTrigger && ("Hook trigger: "+safeV(viralCtx.hook.psychologicalTrigger,100)),
+          viralCtx.hook&&viralCtx.hook.description          && ("Hook pattern: "+safeV(viralCtx.hook.description,150)),
+          viralCtx.hook&&viralCtx.hook.whyItWorks           && ("Why it works: "+safeV(viralCtx.hook.whyItWorks,150)),
+          viralCtx.visualTechniques&&viralCtx.visualTechniques.length && ("Visuals: "+safeListV(viralCtx.visualTechniques,3)),
+          viralCtx.audioChoices&&viralCtx.audioChoices.analysis && ("Audio: "+safeV(viralCtx.audioChoices.analysis,130)),
+          viralCtx.pacingAndEditing&&viralCtx.pacingAndEditing.analysis && ("Pacing: "+safeV(viralCtx.pacingAndEditing.analysis,130)),
+          viralCtx.emotionalDrivers&&viralCtx.emotionalDrivers.length && ("Emotions: "+safeListV(viralCtx.emotionalDrivers,3)),
+          viralCtx.rewatchabilityTriggers&&viralCtx.rewatchabilityTriggers.length && ("Rewatch: "+safeListV(viralCtx.rewatchabilityTriggers,3)),
+          viralCtx.viralSummary&&viralCtx.viralSummary.length && ("Top viral reasons: "+safeListV(viralCtx.viralSummary,5,120)),
+        ].filter(Boolean).join("\n");
+        return "\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\nVIRAL MECHANICS TO ADAPT (do NOT copy - use patterns for our brand):\n"+lines+"\n\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n";
+      })();
+
       const userPrompt = `Generate EXACTLY ${conceptCount} unique short-form video concepts for TODAY.
 Platform distribution: ${platformStr}
 ${themeBlock}
-${focus.trim() ? `TODAY'S BRIEF / FOCUS:\n${focus.trim()}\n` : "No specific brief — create diverse, evergreen content.\n"}
+${viralBlock}${focus.trim() ? `TODAY'S BRIEF / FOCUS:\n${focus.trim()}\n` : "No specific brief — create diverse, evergreen content.\n"}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PREVIOUSLY USED CONCEPTS — DO NOT REPEAT:
@@ -2330,151 +2349,22 @@ OUTPUT FORMAT — Return ONLY a valid JSON array. No preamble, no markdown fence
     const s = loadSettings();
     const activeKey = aiProvider === "claude" ? s.claudeApiKey : s.geminiApiKey;
     if (!activeKey || !activeKey.trim()) {
-      showToast(`Add your ${aiProvider === "claude" ? "Claude" : "Gemini"} API key in ⚙️ Settings first.`, "error");
+      showToast(`Add your ${aiProvider === "claude" ? "Claude" : "Gemini"} API key in Settings first.`, "error");
       return;
     }
-    const vaCount     = opts.conceptCount || 10;
+    // Pre-fill options from VideoAnalyzer selections
+    const vaCount     = opts.conceptCount || 1;
     const vaPlatforms = opts.platforms    || ["Instagram Reel", "TikTok Video"];
     const vaFocus     = opts.focus        || "";
     setConceptCount(vaCount);
     setSelectedPlatforms(vaPlatforms);
     if (vaFocus) setTodayFocus(vaFocus);
+    // Store analysis as context for the generate function
+    setViralCtx(analysis);
+    // Switch to generate tab — user customizes then clicks Generate themselves
     setGenMode("generate");
-    setGenerating(true);
-    setConcepts([]);
-    setProgress("Building concepts from viral analysis…");
-
-    try {
-      // ── SAFE STRING HELPER ──────────────────────────────────────────
-      // Strips characters that break prompt injection: quotes, backticks,
-      // raw newlines (replaced with space), pipe chars. Truncates to maxLen.
-      function safe(val, maxLen = 180) {
-        if (!val) return "";
-        return String(val)
-          .replace(/["`]/g, "'")          // replace double-quotes & backticks
-          .replace(/[\r\n]+/g, " ")       // flatten newlines to space
-          .replace(/\s{2,}/g, " ")        // collapse multiple spaces
-          .trim()
-          .slice(0, maxLen);
-      }
-      function safeList(arr, maxItems = 4, maxLen = 140) {
-        if (!Array.isArray(arr)) return "";
-        return arr.slice(0, maxItems).map(x => safe(x, maxLen)).join("; ");
-      }
-
-      // ── BUILD CLEAN VIRAL INSIGHT BLOCK ────────────────────────────
-      const insights = [
-        analysis.hook?.psychologicalTrigger && `Hook trigger: ${safe(analysis.hook.psychologicalTrigger, 100)}`,
-        analysis.hook?.description          && `Hook pattern: ${safe(analysis.hook.description, 150)}`,
-        analysis.hook?.whyItWorks           && `Why it works: ${safe(analysis.hook.whyItWorks, 150)}`,
-        analysis.visualTechniques?.length   && `Visuals: ${safeList(analysis.visualTechniques, 3)}`,
-        analysis.audioChoices?.analysis     && `Audio: ${safe(analysis.audioChoices.analysis, 130)}`,
-        analysis.pacingAndEditing?.analysis && `Pacing: ${safe(analysis.pacingAndEditing.analysis, 130)}`,
-        analysis.emotionalDrivers?.length   && `Emotions: ${safeList(analysis.emotionalDrivers, 3)}`,
-        analysis.rewatchabilityTriggers?.length && `Rewatch: ${safeList(analysis.rewatchabilityTriggers, 3)}`,
-        analysis.viralSummary?.length && `Top viral reasons: ${safeList(analysis.viralSummary, 5, 120)}`,
-      ].filter(Boolean).join("\n");
-
-      // ── HISTORY — limit to 20 items to keep prompt short ───────────
-      const history  = loadHistory();
-      const prevList = history.slice(0, 20)
-        .map((h, i) => `${i + 1}. [${safe(h.platform, 20)}] ${safe(h.title, 60)}`)
-        .join("\n") || "None";
-
-      setProgress("Generating 10 inspired concepts…");
-
-      const platList = vaPlatforms.join(" + ");
-      const userPrompt = `Generate EXACTLY ${vaCount} unique short-form video concepts for ${safe(loadSettings().productName || "our brand", 40)}.
-Platforms: ${platList}.${vaFocus ? "\nToday's focus: " + safe(vaFocus, 200) : ""}
-
-VIRAL MECHANICS TO ADAPT (do not copy - use the patterns for our brand):
-${insights}
-
-PREVIOUSLY USED CONCEPTS - DO NOT REPEAT:
-${prevList}
-
-ANGLE VARIETY - use one per concept in this order:
-1: hot take  2: personal story  3: myth-busting  4: step-by-step how-to  5: behind-the-scenes
-6: data/stats revelation  7: POV storytelling  8: before vs after  9: nobody talks about this  10: trend reaction
-
-CRITICAL OUTPUT RULES:
-- Return ONLY a valid JSON array. Nothing else. No markdown. No explanation.
-- All string values must be plain text only - no quotes inside strings, no special characters.
-- Keep scripts concise - body max 200 words.
-- The array must have exactly 10 complete objects.
-
-[
-  {
-    "platform": "Instagram Reel",
-    "title": "short internal title",
-    "angle": "angle name",
-    "pillar": "Education",
-    "hook": "spoken hook sentence max 10 words",
-    "hookOnScreen": "3-5 word screen text",
-    "script": {
-      "hook": "0-3s spoken script",
-      "body": "3-45s spoken script only. Short sentences. First person. Specific details. No stage directions.",
-      "cta": "45-60s CTA script"
-    },
-    "visualStyle": "talking head",
-    "audioSuggestion": "audio style description",
-    "hashtags": "#tag1 #tag2 #tag3"
+    showToast("Viral DNA loaded — customize options then click Generate!", "success");
   }
-]`;
-
-      const rawText = await callAI(aiProvider, buildBrandContext(), userPrompt, 9000);
-      setProgress("Parsing concepts…");
-      const parsed = extractJSONArray(rawText);
-
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        throw new Error("AI returned an invalid concept list. Please try again.");
-      }
-
-      const finalConcepts = parsed.map((c, i) => ({
-        id:              uid(),
-        platform:        typeof c.platform === "string" && c.platform.includes("TikTok") ? "TikTok Video" : "Instagram Reel",
-        title:           c.title          || `Concept ${i + 1}`,
-        angle:           c.angle          || ANGLES[i % ANGLES.length],
-        pillar:          c.pillar         || "",
-        hook:            c.hook           || c.script?.hook || "",
-        hookOnScreen:    c.hookOnScreen   || "",
-        script: {
-          hook: c.script?.hook || c.hook || "",
-          body: c.script?.body           || "",
-          cta:  c.script?.cta            || "",
-        },
-        creatifyPrompt:  c.creatifyPrompt  || "",
-        musicDirection: {
-          genre:       c.musicDirection?.genre       || "",
-          tempo:       c.musicDirection?.tempo       || "",
-          mood:        c.musicDirection?.mood        || "",
-          references:  c.musicDirection?.references  || "",
-        },
-        visualStyle:     c.visualStyle    || "talking head",
-        audioSuggestion: c.audioSuggestion|| "",
-        hashtags:        c.hashtags       || "",
-        used:            false,
-        inspiredBy:      analysis.videoTitle || "Analyzed video",
-      }));
-
-      const ig = finalConcepts.filter(c => c.platform === "Instagram Reel");
-      const tt = finalConcepts.filter(c => c.platform === "TikTok Video");
-      const all = [...ig, ...tt];
-
-      setConcepts(all);
-      lsSet(K_DAILY, { date: todayStr(), concepts: all, focus: `Inspired by: ${analysis.videoTitle || "analyzed video"}` });
-      appendHistory(all);
-      showToast(`${all.length} inspired concepts generated!`);
-
-    } catch (err) {
-      const msg = err?.message || String(err);
-      showToast(msg.length > 100 ? msg.slice(0, 100) + "…" : msg, "error");
-    } finally {
-      setGenerating(false);
-      setProgress("");
-    }
-  }
-
   function handleRemove(id) {
     setConcepts(prev => {
       const next = prev.filter(c => c.id !== id);
